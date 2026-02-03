@@ -37,9 +37,19 @@
             border: none;
             border-radius: 10px;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: all 0.3s ease;
             text-transform: uppercase;
             letter-spacing: 2px;
+        }
+
+        .spell-btn.unlocked {
+            animation: unlockPulse 0.5s ease;
+        }
+
+        @keyframes unlockPulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.1); box-shadow: 0 0 30px currentColor; }
+            100% { transform: scale(1); }
         }
 
         .spell-btn:hover:not(:disabled) {
@@ -293,6 +303,13 @@
             zap: 0
         };
         const cooldownDuration = 5000; // 5 seconds commitment
+
+        // Track previous unlock states for animation
+        let previousUnlockStates = {
+            spiral: false,
+            pulse: false,
+            zap: false
+        };
 
         // Beam thickness based on mana (0-6 mana maps to min-max thickness)
         const BEAM_THICKNESS_MIN = 8;
@@ -924,6 +941,9 @@
                 return;
             }
 
+            // Check if this beam type is unlocked (has active node)
+            if (!isBeamTypeUnlocked(spell)) return;
+
             // For attack types (Spiral/Pulse/Zap):
             // Check if ANY attack cooldown is active
             const attackCooldownActive = cooldowns.spiral > now || cooldowns.pulse > now || cooldowns.zap > now;
@@ -955,6 +975,20 @@
             return Math.max(0, effective);
         }
 
+        // Check if a beam type has at least one active functional node
+        function isBeamTypeUnlocked(beamType) {
+            if (beamType === NEUTRAL) return true; // Neutral always unlocked
+
+            for (const nodeName of functionalNodeNames) {
+                const spell = nodeNetwork.spellAssignments[nodeName];
+                const state = nodeStates[nodeName];
+                if (spell === beamType && state === 'active') {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         function updateCooldownDisplay() {
             const now = performance.now();
             const maxRemaining = Math.max(
@@ -968,25 +1002,48 @@
             [SPIRAL, PULSE, ZAP].forEach(spell => {
                 const btn = spell === SPIRAL ? spiralBtn : spell === PULSE ? pulseBtn : zapBtn;
                 const isActive = playerBeamType === spell;
+                const isUnlocked = isBeamTypeUnlocked(spell);
 
-                if (attackOnCooldown) {
+                if (!isUnlocked) {
+                    // LOCKED - no active node for this beam type
                     btn.disabled = true;
+                    btn.textContent = `🔒 ${spell.toUpperCase()}`;
+                    btn.style.opacity = '0.3';
+                    btn.style.outline = 'none';
+                    btn.style.filter = 'grayscale(80%)';
+                    btn.title = `Activate a ${spell.charAt(0).toUpperCase() + spell.slice(1)} node first`;
+                } else if (attackOnCooldown) {
+                    // UNLOCKED but on cooldown
+                    btn.disabled = true;
+                    btn.style.filter = 'none';
+                    btn.title = '';
                     if (isActive) {
-                        // This is the active beam
                         btn.textContent = `${spell.toUpperCase()} (${(maxRemaining / 1000).toFixed(1)}s)`;
                         btn.style.opacity = '1';
                         btn.style.outline = '3px solid white';
                     } else {
                         btn.textContent = spell.toUpperCase();
-                        btn.style.opacity = '0.4';
+                        btn.style.opacity = '0.5';
                         btn.style.outline = 'none';
                     }
                 } else {
+                    // UNLOCKED and available
                     btn.disabled = false;
                     btn.textContent = spell.toUpperCase();
                     btn.style.opacity = '1';
+                    btn.style.filter = 'none';
                     btn.style.outline = isActive ? '3px solid white' : 'none';
+                    btn.title = '';
+
+                    // Check if just became unlocked (trigger animation)
+                    if (!previousUnlockStates[spell]) {
+                        btn.classList.add('unlocked');
+                        setTimeout(() => btn.classList.remove('unlocked'), 500);
+                    }
                 }
+
+                // Update previous state
+                previousUnlockStates[spell] = isUnlocked;
             });
 
             // Neutral button is ALWAYS available (no cooldown to switch to it)
@@ -994,7 +1051,9 @@
             neutralBtn.disabled = false;
             neutralBtn.textContent = 'NEUTRAL';
             neutralBtn.style.opacity = '1';
+            neutralBtn.style.filter = 'none';
             neutralBtn.style.outline = neutralActive ? '3px solid white' : 'none';
+            neutralBtn.title = '';
         }
 
         function initBoostAndCooldowns() {
