@@ -191,9 +191,9 @@
         const nodeNetwork = {
             centerX: 0,
             centerY: 0,
-            scale: 1,
-            functionalRadius: 14,  // Larger for functional nodes
-            pathwayRadius: 6,      // Smaller for pathway nodes
+            scale: 1.5,  // 50% larger
+            functionalRadius: 21,  // Larger for functional nodes (14 * 1.5)
+            pathwayRadius: 9,      // Smaller for pathway nodes (6 * 1.5)
 
             // Node definitions: position offsets and type
             nodes: {
@@ -474,8 +474,9 @@
         // Update awareness position (follows path step by step)
         function updateStickAwareness(timestamp) {
             // Update network center position
-            nodeNetwork.centerX = canvas.width / 2;
-            nodeNetwork.centerY = canvas.height - 100;
+            // Position below player wizard (left side)
+            nodeNetwork.centerX = 160;
+            nodeNetwork.centerY = canvas.height - 130;
 
             if (awarenessMoving && awarenessPath.length > 0) {
                 const elapsed = timestamp - awarenessMoveStartTime;
@@ -553,21 +554,21 @@
 
         // Draw the node network with all connections and nodes
         function drawStickFigure() {
-            // Position network at bottom center of screen
-            nodeNetwork.centerX = canvas.width / 2;
-            nodeNetwork.centerY = canvas.height - 100;
+            // Position below player wizard (left side)
+            nodeNetwork.centerX = 160;
+            nodeNetwork.centerY = canvas.height - 130;
 
             const cx = nodeNetwork.centerX;
             const cy = nodeNetwork.centerY;
 
             ctx.save();
 
-            // Draw background panel
+            // Draw background panel (scaled up 1.5x)
             ctx.fillStyle = 'rgba(20, 20, 40, 0.7)';
             ctx.strokeStyle = 'rgba(100, 100, 150, 0.5)';
             ctx.lineWidth = 2;
             ctx.beginPath();
-            ctx.roundRect(cx - 110, cy - 110, 220, 215, 10);
+            ctx.roundRect(cx - 140, cy - 150, 280, 310, 10);
             ctx.fill();
             ctx.stroke();
 
@@ -753,9 +754,9 @@
 
             // Title
             ctx.fillStyle = '#fff';
-            ctx.font = 'bold 12px Georgia';
+            ctx.font = 'bold 14px Georgia';
             ctx.textAlign = 'center';
-            ctx.fillText('BODY NODES', cx, cy - 97);
+            ctx.fillText('BODY NODES', cx, cy - 135);
 
             ctx.restore();
         }
