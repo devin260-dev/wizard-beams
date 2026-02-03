@@ -179,37 +179,98 @@
         let clashFlashIntensity = 0;
         let lastClashResult = 0; // -1, 0, or 1
 
-        // Stick figure node system
-        const stickFigure = {
-            centerX: 0,  // Will be set based on canvas width
-            centerY: 0,  // Will be set based on canvas height
+        // ============================================
+        // NODE NETWORK SYSTEM
+        // ============================================
+
+        // Node types
+        const NODE_TYPE_FUNCTIONAL = 'functional'; // Can be activated (head, center, hands, feet)
+        const NODE_TYPE_PATHWAY = 'pathway';       // Transit only (neck, shoulders, elbows, hips, knees)
+
+        // All nodes in the network
+        const nodeNetwork = {
+            centerX: 0,
+            centerY: 0,
             scale: 1,
-            // Node positions relative to center (torso center)
-            nodeOffsets: {
-                head: { x: 0, y: -70 },
-                center: { x: 0, y: 0 },
-                leftHand: { x: -60, y: -20 },
-                rightHand: { x: 60, y: -20 },
-                leftFoot: { x: -25, y: 70 },
-                rightFoot: { x: 25, y: 70 }
+            functionalRadius: 14,  // Larger for functional nodes
+            pathwayRadius: 6,      // Smaller for pathway nodes
+
+            // Node definitions: position offsets and type
+            nodes: {
+                // Functional nodes (6) - can be activated
+                head:       { x: 0, y: -85, type: NODE_TYPE_FUNCTIONAL },
+                center:     { x: 0, y: -20, type: NODE_TYPE_FUNCTIONAL },
+                leftHand:   { x: -75, y: -15, type: NODE_TYPE_FUNCTIONAL },
+                rightHand:  { x: 75, y: -15, type: NODE_TYPE_FUNCTIONAL },
+                leftFoot:   { x: -30, y: 85, type: NODE_TYPE_FUNCTIONAL },
+                rightFoot:  { x: 30, y: 85, type: NODE_TYPE_FUNCTIONAL },
+
+                // Pathway nodes (9) - transit only
+                neck:           { x: 0, y: -60, type: NODE_TYPE_PATHWAY },
+                leftShoulder:   { x: -25, y: -35, type: NODE_TYPE_PATHWAY },
+                rightShoulder:  { x: 25, y: -35, type: NODE_TYPE_PATHWAY },
+                leftElbow:      { x: -50, y: -25, type: NODE_TYPE_PATHWAY },
+                rightElbow:     { x: 50, y: -25, type: NODE_TYPE_PATHWAY },
+                leftHip:        { x: -15, y: 20, type: NODE_TYPE_PATHWAY },
+                rightHip:       { x: 15, y: 20, type: NODE_TYPE_PATHWAY },
+                leftKnee:       { x: -25, y: 55, type: NODE_TYPE_PATHWAY },
+                rightKnee:      { x: 25, y: 55, type: NODE_TYPE_PATHWAY }
             },
-            nodeRadius: 12,
-            nodes: {} // Will hold spell assignments
+
+            // Adjacency list - which nodes connect to which
+            connections: {
+                // Head path
+                head: ['neck'],
+                neck: ['head', 'center'],
+
+                // Center connects to neck and all limb starts
+                center: ['neck', 'leftShoulder', 'rightShoulder', 'leftHip', 'rightHip'],
+
+                // Left arm path
+                leftShoulder: ['center', 'leftElbow'],
+                leftElbow: ['leftShoulder', 'leftHand'],
+                leftHand: ['leftElbow'],
+
+                // Right arm path
+                rightShoulder: ['center', 'rightElbow'],
+                rightElbow: ['rightShoulder', 'rightHand'],
+                rightHand: ['rightElbow'],
+
+                // Left leg path
+                leftHip: ['center', 'leftKnee'],
+                leftKnee: ['leftHip', 'leftFoot'],
+                leftFoot: ['leftKnee'],
+
+                // Right leg path
+                rightHip: ['center', 'rightKnee'],
+                rightKnee: ['rightHip', 'rightFoot'],
+                rightFoot: ['rightKnee']
+            },
+
+            // Spell assignments for functional nodes
+            spellAssignments: {}
         };
 
-        // Stick figure awareness state
-        let stickAwarenessPos = { x: 0, y: 0 };
-        let stickAwarenessAtNode = 'center';
-        let stickAwarenessTarget = 'center';
-        let stickAwarenessMoving = false;
-        let stickAwarenessMoveStartTime = 0;
-        let stickAwarenessMoveStartPos = { x: 0, y: 0 };
-        const stickAwarenessMoveTime = 1000; // 1 second travel time
+        // List of all node names
+        const allNodeNames = Object.keys(nodeNetwork.nodes);
+        const functionalNodeNames = allNodeNames.filter(n => nodeNetwork.nodes[n].type === NODE_TYPE_FUNCTIONAL);
+        const pathwayNodeNames = allNodeNames.filter(n => nodeNetwork.nodes[n].type === NODE_TYPE_PATHWAY);
 
-        // Node activation state
+        // Awareness state - now includes path following
+        let awarenessPos = { x: 0, y: 0 };
+        let awarenessAtNode = 'center';
+        let awarenessPath = [];           // Array of nodes to traverse
+        let awarenessPathIndex = 0;       // Current position in path
+        let awarenessMoving = false;
+        let awarenessMoveStartTime = 0;
+        let awarenessMoveStartPos = { x: 0, y: 0 };
+        let awarenessCurrentTarget = null; // Current immediate target node
+        const awarenessStepTime = 300;    // Time to move between adjacent nodes (faster!)
+
+        // Node activation state (only for functional nodes)
         // States: 'dormant', 'activating', 'active'
         let nodeStates = {};
-        let nodeActivationProgress = {}; // 0 to 1 for activating nodes
+        let nodeActivationProgress = {};
         let nodeActivationStartTime = {};
         const nodeActivationTime = 2000; // 2 seconds to activate
 
@@ -264,36 +325,72 @@
             return result * counterBonus; // +3 if countering, -3 if countered, 0 if tie
         }
 
-        // Initialize node states (all dormant)
+        // ============================================
+        // PATHFINDING (BFS for shortest path)
+        // ============================================
+
+        function findPath(startNode, endNode) {
+            if (startNode === endNode) return [startNode];
+            if (!startNode || !endNode) return [];
+
+            const visited = new Set();
+            const queue = [[startNode]];
+            visited.add(startNode);
+
+            while (queue.length > 0) {
+                const path = queue.shift();
+                const currentNode = path[path.length - 1];
+
+                const neighbors = nodeNetwork.connections[currentNode] || [];
+                for (const neighbor of neighbors) {
+                    if (neighbor === endNode) {
+                        return [...path, neighbor];
+                    }
+                    if (!visited.has(neighbor)) {
+                        visited.add(neighbor);
+                        queue.push([...path, neighbor]);
+                    }
+                }
+            }
+
+            return []; // No path found
+        }
+
+        // ============================================
+        // NODE STATE FUNCTIONS
+        // ============================================
+
+        // Initialize node states (only functional nodes can be activated)
         function initNodeStates() {
-            const nodeNames = ['head', 'center', 'leftHand', 'rightHand', 'leftFoot', 'rightFoot'];
             nodeStates = {};
             nodeActivationProgress = {};
             nodeActivationStartTime = {};
             playerActiveMana = 0;
-            nodeNames.forEach(name => {
+
+            functionalNodeNames.forEach(name => {
                 nodeStates[name] = 'dormant';
                 nodeActivationProgress[name] = 0;
             });
         }
 
-        // Start activating a node (called when awareness arrives)
+        // Start activating a node (only for functional nodes)
         function startNodeActivation(nodeName) {
+            // Only functional nodes can be activated
+            if (nodeNetwork.nodes[nodeName]?.type !== NODE_TYPE_FUNCTIONAL) return;
+
             if (nodeStates[nodeName] === 'dormant') {
                 nodeStates[nodeName] = 'activating';
                 nodeActivationStartTime[nodeName] = performance.now();
                 nodeActivationProgress[nodeName] = 0;
             }
-            // If already activating or active, do nothing
         }
 
         // Update node activation progress (call each frame)
         function updateNodeActivation(timestamp) {
-            const nodeNames = ['head', 'center', 'leftHand', 'rightHand', 'leftFoot', 'rightFoot'];
-            nodeNames.forEach(nodeName => {
+            functionalNodeNames.forEach(nodeName => {
                 if (nodeStates[nodeName] === 'activating') {
                     // Only progress if awareness is at this node
-                    if (stickAwarenessAtNode === nodeName) {
+                    if (awarenessAtNode === nodeName) {
                         const elapsed = timestamp - nodeActivationStartTime[nodeName];
                         nodeActivationProgress[nodeName] = Math.min(1, elapsed / nodeActivationTime);
 
@@ -306,115 +403,162 @@
             });
         }
 
-        // Initialize stick figure nodes with random spell assignments
+        // Initialize spell assignments for functional nodes
         function initStickFigureNodes() {
-            const nodeNames = ['head', 'center', 'leftHand', 'rightHand', 'leftFoot', 'rightFoot'];
-            const spells = [SPIRAL, PULSE, ZAP]; // 3 spells
+            const spells = [SPIRAL, PULSE, ZAP];
 
-            // Shuffle node names
-            const shuffledNodes = [...nodeNames].sort(() => Math.random() - 0.5);
+            // Shuffle functional node names
+            const shuffledNodes = [...functionalNodeNames].sort(() => Math.random() - 0.5);
 
             // First 3 get spells, rest are duds
-            stickFigure.nodes = {};
+            nodeNetwork.spellAssignments = {};
             shuffledNodes.forEach((nodeName, index) => {
                 if (index < 3) {
-                    stickFigure.nodes[nodeName] = spells[index];
+                    nodeNetwork.spellAssignments[nodeName] = spells[index];
                 } else {
-                    stickFigure.nodes[nodeName] = 'dud';
+                    nodeNetwork.spellAssignments[nodeName] = 'dud';
                 }
             });
         }
 
-        // Get color for a node
+        // Get color for a node based on its spell assignment
         function getNodeColor(nodeName) {
-            const spell = stickFigure.nodes[nodeName];
-            if (spell === 'dud') return '#666666'; // Grey for duds
+            const nodeInfo = nodeNetwork.nodes[nodeName];
+            if (!nodeInfo) return '#666666';
+
+            // Pathway nodes are always grey
+            if (nodeInfo.type === NODE_TYPE_PATHWAY) return '#555555';
+
+            // Functional nodes get spell color or dud grey
+            const spell = nodeNetwork.spellAssignments[nodeName];
+            if (spell === 'dud') return '#666666';
             return colors[spell] || '#666666';
         }
 
-        // Get stick figure node world position
-        function getStickNodePosition(nodeName) {
-            const offset = stickFigure.nodeOffsets[nodeName];
+        // Get node world position
+        function getNodePosition(nodeName) {
+            const nodeInfo = nodeNetwork.nodes[nodeName];
+            if (!nodeInfo) return { x: 0, y: 0 };
+
             return {
-                x: stickFigure.centerX + offset.x * stickFigure.scale,
-                y: stickFigure.centerY + offset.y * stickFigure.scale
+                x: nodeNetwork.centerX + nodeInfo.x * nodeNetwork.scale,
+                y: nodeNetwork.centerY + nodeInfo.y * nodeNetwork.scale
             };
         }
 
-        // Initialize stick figure awareness at center node
+        // Get node radius based on type
+        function getNodeRadius(nodeName) {
+            const nodeInfo = nodeNetwork.nodes[nodeName];
+            if (!nodeInfo) return nodeNetwork.pathwayRadius;
+
+            return nodeInfo.type === NODE_TYPE_FUNCTIONAL
+                ? nodeNetwork.functionalRadius
+                : nodeNetwork.pathwayRadius;
+        }
+
+        // ============================================
+        // AWARENESS MOVEMENT (PATH-BASED)
+        // ============================================
+
+        // Initialize awareness at center node
         function initStickAwareness() {
-            stickAwarenessAtNode = 'center';
-            stickAwarenessTarget = 'center';
-            stickAwarenessMoving = false;
-            // Position will be set properly once stickFigure.centerX/Y are calculated
+            awarenessAtNode = 'center';
+            awarenessPath = [];
+            awarenessPathIndex = 0;
+            awarenessMoving = false;
+            awarenessCurrentTarget = null;
             // Start activating the center node since awareness begins there
             startNodeActivation('center');
         }
 
-        // Update stick figure awareness position (call each frame)
+        // Update awareness position (follows path step by step)
         function updateStickAwareness(timestamp) {
-            // Make sure stick figure position is set
-            stickFigure.centerX = canvas.width / 2;
-            stickFigure.centerY = canvas.height - 100;
+            // Update network center position
+            nodeNetwork.centerX = canvas.width / 2;
+            nodeNetwork.centerY = canvas.height - 100;
 
-            if (stickAwarenessMoving) {
-                const elapsed = timestamp - stickAwarenessMoveStartTime;
-                const progress = Math.min(1, elapsed / stickAwarenessMoveTime);
-                // Ease out cubic for smooth deceleration
-                const eased = 1 - Math.pow(1 - progress, 3);
+            if (awarenessMoving && awarenessPath.length > 0) {
+                const elapsed = timestamp - awarenessMoveStartTime;
+                const progress = Math.min(1, elapsed / awarenessStepTime);
+                // Ease out for smooth movement
+                const eased = 1 - Math.pow(1 - progress, 2);
 
-                const targetPos = getStickNodePosition(stickAwarenessTarget);
-                stickAwarenessPos.x = stickAwarenessMoveStartPos.x + (targetPos.x - stickAwarenessMoveStartPos.x) * eased;
-                stickAwarenessPos.y = stickAwarenessMoveStartPos.y + (targetPos.y - stickAwarenessMoveStartPos.y) * eased;
+                const targetPos = getNodePosition(awarenessCurrentTarget);
+                awarenessPos.x = awarenessMoveStartPos.x + (targetPos.x - awarenessMoveStartPos.x) * eased;
+                awarenessPos.y = awarenessMoveStartPos.y + (targetPos.y - awarenessMoveStartPos.y) * eased;
 
                 if (progress >= 1) {
-                    stickAwarenessMoving = false;
-                    stickAwarenessAtNode = stickAwarenessTarget;
-                    stickAwarenessPos = { ...targetPos };
-                    // Start activating this node when awareness arrives
-                    startNodeActivation(stickAwarenessAtNode);
+                    // Arrived at current target node
+                    awarenessAtNode = awarenessCurrentTarget;
+                    awarenessPos = { ...targetPos };
+                    awarenessPathIndex++;
+
+                    // Check if there are more nodes in the path
+                    if (awarenessPathIndex < awarenessPath.length) {
+                        // Move to next node in path
+                        awarenessCurrentTarget = awarenessPath[awarenessPathIndex];
+                        awarenessMoveStartTime = timestamp;
+                        awarenessMoveStartPos = { ...awarenessPos };
+                    } else {
+                        // Reached final destination
+                        awarenessMoving = false;
+                        awarenessPath = [];
+                        awarenessPathIndex = 0;
+                        awarenessCurrentTarget = null;
+
+                        // Start activating if it's a functional node
+                        startNodeActivation(awarenessAtNode);
+                    }
                 }
-            } else {
+            } else if (!awarenessMoving && awarenessAtNode) {
                 // Snap to current node position (in case canvas resized)
-                const currentPos = getStickNodePosition(stickAwarenessAtNode);
-                stickAwarenessPos = { ...currentPos };
+                const currentPos = getNodePosition(awarenessAtNode);
+                awarenessPos = { ...currentPos };
             }
         }
 
-        // Move stick figure awareness to a different node
-        function moveStickAwarenessTo(nodeName) {
-            if (stickAwarenessMoving) return; // Can't move while already moving
-            if (stickAwarenessAtNode === nodeName) return; // Already there
+        // Move awareness to a target node (uses pathfinding)
+        function moveStickAwarenessTo(targetNode) {
+            if (awarenessMoving) return; // Can't interrupt current movement
+            if (awarenessAtNode === targetNode) return; // Already there
+            if (!awarenessAtNode) return; // No starting point
 
-            stickAwarenessTarget = nodeName;
-            stickAwarenessMoving = true;
-            stickAwarenessMoveStartTime = performance.now();
-            stickAwarenessMoveStartPos = { ...stickAwarenessPos };
-            stickAwarenessAtNode = null; // In transit
+            // Find path from current node to target
+            const path = findPath(awarenessAtNode, targetNode);
+            if (path.length < 2) return; // No valid path or already there
+
+            // Start following the path (skip first node since we're already there)
+            awarenessPath = path.slice(1);
+            awarenessPathIndex = 0;
+            awarenessCurrentTarget = awarenessPath[0];
+            awarenessMoving = true;
+            awarenessMoveStartTime = performance.now();
+            awarenessMoveStartPos = { ...awarenessPos };
+            awarenessAtNode = null; // In transit
         }
 
-        // Check if a click hit a stick figure node
+        // Check if a click hit any node (functional nodes only for interaction)
         function getClickedStickNode(clickX, clickY) {
-            const nodeNames = ['head', 'center', 'leftHand', 'rightHand', 'leftFoot', 'rightFoot'];
-            for (const nodeName of nodeNames) {
-                const pos = getStickNodePosition(nodeName);
+            // Only allow clicking on functional nodes
+            for (const nodeName of functionalNodeNames) {
+                const pos = getNodePosition(nodeName);
+                const radius = getNodeRadius(nodeName);
                 const dist = Math.sqrt(Math.pow(clickX - pos.x, 2) + Math.pow(clickY - pos.y, 2));
-                if (dist <= stickFigure.nodeRadius + 10) {
+                if (dist <= radius + 10) {
                     return nodeName;
                 }
             }
             return null;
         }
 
-        // Draw the stick figure with nodes
+        // Draw the node network with all connections and nodes
         function drawStickFigure() {
-            // Position stick figure at bottom center of screen
-            stickFigure.centerX = canvas.width / 2;
-            stickFigure.centerY = canvas.height - 100;
+            // Position network at bottom center of screen
+            nodeNetwork.centerX = canvas.width / 2;
+            nodeNetwork.centerY = canvas.height - 100;
 
-            const cx = stickFigure.centerX;
-            const cy = stickFigure.centerY;
-            const s = stickFigure.scale;
+            const cx = nodeNetwork.centerX;
+            const cy = nodeNetwork.centerY;
 
             ctx.save();
 
@@ -423,53 +567,59 @@
             ctx.strokeStyle = 'rgba(100, 100, 150, 0.5)';
             ctx.lineWidth = 2;
             ctx.beginPath();
-            ctx.roundRect(cx - 100, cy - 95, 200, 190, 10);
+            ctx.roundRect(cx - 110, cy - 110, 220, 215, 10);
             ctx.fill();
             ctx.stroke();
 
-            // Draw stick figure body
-            ctx.strokeStyle = 'rgba(200, 200, 220, 0.8)';
-            ctx.lineWidth = 3;
+            // Draw all connections (edges between nodes)
+            ctx.strokeStyle = 'rgba(100, 100, 120, 0.6)';
+            ctx.lineWidth = 2;
             ctx.lineCap = 'round';
 
-            // Head to center (neck/spine)
-            const headPos = getStickNodePosition('head');
-            const centerPos = getStickNodePosition('center');
-            ctx.beginPath();
-            ctx.moveTo(headPos.x, headPos.y + stickFigure.nodeRadius);
-            ctx.lineTo(centerPos.x, centerPos.y);
-            ctx.stroke();
+            const drawnEdges = new Set();
+            for (const nodeName of allNodeNames) {
+                const nodePos = getNodePosition(nodeName);
+                const neighbors = nodeNetwork.connections[nodeName] || [];
 
-            // Arms (center to hands)
-            const leftHandPos = getStickNodePosition('leftHand');
-            const rightHandPos = getStickNodePosition('rightHand');
-            ctx.beginPath();
-            ctx.moveTo(leftHandPos.x, leftHandPos.y);
-            ctx.lineTo(cx, cy - 30 * s); // Shoulder area
-            ctx.lineTo(rightHandPos.x, rightHandPos.y);
-            ctx.stroke();
+                for (const neighbor of neighbors) {
+                    // Avoid drawing same edge twice
+                    const edgeKey = [nodeName, neighbor].sort().join('-');
+                    if (drawnEdges.has(edgeKey)) continue;
+                    drawnEdges.add(edgeKey);
 
-            // Legs (center to feet)
-            const leftFootPos = getStickNodePosition('leftFoot');
-            const rightFootPos = getStickNodePosition('rightFoot');
-            ctx.beginPath();
-            ctx.moveTo(leftFootPos.x, leftFootPos.y);
-            ctx.lineTo(cx, cy + 20 * s); // Hip area
-            ctx.lineTo(rightFootPos.x, rightFootPos.y);
-            ctx.stroke();
+                    const neighborPos = getNodePosition(neighbor);
+                    ctx.beginPath();
+                    ctx.moveTo(nodePos.x, nodePos.y);
+                    ctx.lineTo(neighborPos.x, neighborPos.y);
+                    ctx.stroke();
+                }
+            }
 
-            // Torso (shoulders to hips)
-            ctx.beginPath();
-            ctx.moveTo(cx, cy - 30 * s);
-            ctx.lineTo(cx, cy + 20 * s);
-            ctx.stroke();
+            // Draw pathway nodes (small grey dots)
+            pathwayNodeNames.forEach(nodeName => {
+                const pos = getNodePosition(nodeName);
+                const radius = getNodeRadius(nodeName);
 
-            // Draw nodes on body parts
-            const nodeNames = ['head', 'center', 'leftHand', 'rightHand', 'leftFoot', 'rightFoot'];
-            nodeNames.forEach(nodeName => {
-                const pos = getStickNodePosition(nodeName);
+                // Simple grey dot
+                ctx.fillStyle = 'rgba(80, 80, 100, 0.8)';
+                ctx.beginPath();
+                ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Subtle outline
+                ctx.strokeStyle = 'rgba(120, 120, 140, 0.6)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+                ctx.stroke();
+            });
+
+            // Draw functional nodes (larger, colored)
+            functionalNodeNames.forEach(nodeName => {
+                const pos = getNodePosition(nodeName);
+                const radius = getNodeRadius(nodeName);
                 const color = getNodeColor(nodeName);
-                const spell = stickFigure.nodes[nodeName];
+                const spell = nodeNetwork.spellAssignments[nodeName];
                 const state = nodeStates[nodeName] || 'dormant';
                 const activationProg = nodeActivationProgress[nodeName] || 0;
 
@@ -478,43 +628,39 @@
                     ctx.strokeStyle = hexToRgba(color, 0.4);
                     ctx.lineWidth = 2;
                     ctx.beginPath();
-                    ctx.arc(pos.x, pos.y, stickFigure.nodeRadius, 0, Math.PI * 2);
+                    ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
                     ctx.stroke();
 
                     // Very faint fill
                     ctx.fillStyle = hexToRgba(color, 0.1);
                     ctx.beginPath();
-                    ctx.arc(pos.x, pos.y, stickFigure.nodeRadius, 0, Math.PI * 2);
+                    ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
                     ctx.fill();
 
                 } else if (state === 'activating') {
                     // ACTIVATING: dim node with circular progress bar
-                    // Dim fill
                     ctx.fillStyle = hexToRgba(color, 0.25);
                     ctx.beginPath();
-                    ctx.arc(pos.x, pos.y, stickFigure.nodeRadius, 0, Math.PI * 2);
+                    ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
                     ctx.fill();
 
-                    // Dim outline
                     ctx.strokeStyle = hexToRgba(color, 0.5);
                     ctx.lineWidth = 2;
                     ctx.beginPath();
-                    ctx.arc(pos.x, pos.y, stickFigure.nodeRadius, 0, Math.PI * 2);
+                    ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
                     ctx.stroke();
 
-                    // Progress bar (circular arc around node)
-                    const progressRadius = stickFigure.nodeRadius + 5;
-                    const startAngle = -Math.PI / 2; // Start at top
+                    // Progress bar
+                    const progressRadius = radius + 5;
+                    const startAngle = -Math.PI / 2;
                     const endAngle = startAngle + (activationProg * Math.PI * 2);
 
-                    // Background track
                     ctx.strokeStyle = hexToRgba(color, 0.2);
                     ctx.lineWidth = 4;
                     ctx.beginPath();
                     ctx.arc(pos.x, pos.y, progressRadius, 0, Math.PI * 2);
                     ctx.stroke();
 
-                    // Progress fill
                     ctx.strokeStyle = color;
                     ctx.lineWidth = 4;
                     ctx.lineCap = 'round';
@@ -527,9 +673,8 @@
                     ctx.lineCap = 'butt';
 
                 } else if (state === 'active') {
-                    // ACTIVE: bright, glowing, fully powered
-                    // Outer glow
-                    const glowSize = stickFigure.nodeRadius + 10 + Math.sin(animationTime * 4) * 2;
+                    // ACTIVE: bright, glowing
+                    const glowSize = radius + 10 + Math.sin(animationTime * 4) * 2;
                     const glowGradient = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, glowSize);
                     glowGradient.addColorStop(0, hexToRgba(color, 0.8));
                     glowGradient.addColorStop(0.4, hexToRgba(color, 0.4));
@@ -540,31 +685,28 @@
                     ctx.arc(pos.x, pos.y, glowSize, 0, Math.PI * 2);
                     ctx.fill();
 
-                    // Bright filled node
                     ctx.fillStyle = color;
                     ctx.shadowColor = color;
                     ctx.shadowBlur = 15;
                     ctx.beginPath();
-                    ctx.arc(pos.x, pos.y, stickFigure.nodeRadius, 0, Math.PI * 2);
+                    ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
                     ctx.fill();
 
-                    // Bright outline
                     ctx.strokeStyle = '#fff';
                     ctx.lineWidth = 2;
                     ctx.beginPath();
-                    ctx.arc(pos.x, pos.y, stickFigure.nodeRadius, 0, Math.PI * 2);
+                    ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
                     ctx.stroke();
                     ctx.shadowBlur = 0;
 
-                    // Inner bright core
                     ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
                     ctx.beginPath();
-                    ctx.arc(pos.x, pos.y, stickFigure.nodeRadius * 0.4, 0, Math.PI * 2);
+                    ctx.arc(pos.x, pos.y, radius * 0.4, 0, Math.PI * 2);
                     ctx.fill();
                 }
 
-                // Label for spell type (only show on active nodes or always dim on others)
-                if (spell !== 'dud') {
+                // Label for spell type
+                if (spell && spell !== 'dud') {
                     ctx.fillStyle = state === 'active' ? '#fff' : hexToRgba('#fff', 0.4);
                     ctx.font = state === 'active' ? 'bold 10px Georgia' : '9px Georgia';
                     ctx.textAlign = 'center';
@@ -574,21 +716,22 @@
                 }
             });
 
-            // Draw awareness indicator (pulsing white ring around current position)
-            const awPulse = Math.sin(animationTime * 6) * 0.3 + 0.7; // Pulsing opacity
-            const awSize = stickFigure.nodeRadius + 6 + Math.sin(animationTime * 4) * 3; // Pulsing size
+            // Draw awareness indicator (pulsing white ring)
+            const awPulse = Math.sin(animationTime * 6) * 0.3 + 0.7;
+            const currentRadius = awarenessAtNode ? getNodeRadius(awarenessAtNode) : nodeNetwork.pathwayRadius;
+            const awSize = currentRadius + 6 + Math.sin(animationTime * 4) * 3;
 
             // Outer glow
             const awGlow = ctx.createRadialGradient(
-                stickAwarenessPos.x, stickAwarenessPos.y, awSize - 4,
-                stickAwarenessPos.x, stickAwarenessPos.y, awSize + 12
+                awarenessPos.x, awarenessPos.y, awSize - 4,
+                awarenessPos.x, awarenessPos.y, awSize + 12
             );
             awGlow.addColorStop(0, `rgba(255, 255, 255, ${awPulse * 0.5})`);
             awGlow.addColorStop(0.5, `rgba(200, 220, 255, ${awPulse * 0.3})`);
             awGlow.addColorStop(1, 'rgba(200, 220, 255, 0)');
             ctx.fillStyle = awGlow;
             ctx.beginPath();
-            ctx.arc(stickAwarenessPos.x, stickAwarenessPos.y, awSize + 12, 0, Math.PI * 2);
+            ctx.arc(awarenessPos.x, awarenessPos.y, awSize + 12, 0, Math.PI * 2);
             ctx.fill();
 
             // Bright ring
@@ -597,14 +740,14 @@
             ctx.shadowColor = '#fff';
             ctx.shadowBlur = 15;
             ctx.beginPath();
-            ctx.arc(stickAwarenessPos.x, stickAwarenessPos.y, awSize, 0, Math.PI * 2);
+            ctx.arc(awarenessPos.x, awarenessPos.y, awSize, 0, Math.PI * 2);
             ctx.stroke();
 
-            // Inner bright ring
+            // Inner ring
             ctx.strokeStyle = `rgba(200, 230, 255, ${awPulse * 0.8})`;
             ctx.lineWidth = 2;
             ctx.beginPath();
-            ctx.arc(stickAwarenessPos.x, stickAwarenessPos.y, awSize - 4, 0, Math.PI * 2);
+            ctx.arc(awarenessPos.x, awarenessPos.y, awSize - 4, 0, Math.PI * 2);
             ctx.stroke();
             ctx.shadowBlur = 0;
 
@@ -612,7 +755,7 @@
             ctx.fillStyle = '#fff';
             ctx.font = 'bold 12px Georgia';
             ctx.textAlign = 'center';
-            ctx.fillText('BODY NODES', cx, cy - 82);
+            ctx.fillText('BODY NODES', cx, cy - 97);
 
             ctx.restore();
         }
