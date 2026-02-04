@@ -23,23 +23,24 @@
 
         #controls {
             position: fixed;
-            bottom: 30px;
-            right: 30px;
+            bottom: 25px;
+            left: 50%;
+            transform: translateX(-50%);
             display: flex;
-            gap: 15px;
+            gap: 8px;
             z-index: 10;
         }
 
         .spell-btn {
-            padding: 20px 40px;
-            font-size: 24px;
+            padding: 12px 20px;
+            font-size: 14px;
             font-weight: bold;
             border: none;
-            border-radius: 10px;
+            border-radius: 6px;
             cursor: pointer;
             transition: all 0.3s ease;
             text-transform: uppercase;
-            letter-spacing: 2px;
+            letter-spacing: 1px;
         }
 
         .spell-btn.unlocked {
@@ -48,12 +49,12 @@
 
         @keyframes unlockPulse {
             0% { transform: scale(1); }
-            50% { transform: scale(1.1); box-shadow: 0 0 30px currentColor; }
+            50% { transform: scale(1.08); box-shadow: 0 0 20px currentColor; }
             100% { transform: scale(1); }
         }
 
         .spell-btn:hover:not(:disabled) {
-            transform: scale(1.1);
+            transform: scale(1.05);
         }
 
         .spell-btn:disabled {
@@ -64,25 +65,25 @@
         #spiralBtn {
             background: linear-gradient(135deg, #9b59b6, #8e44ad);
             color: white;
-            box-shadow: 0 0 20px rgba(155, 89, 182, 0.5);
+            box-shadow: 0 0 12px rgba(155, 89, 182, 0.5);
         }
 
         #pulseBtn {
             background: linear-gradient(135deg, #e74c3c, #c0392b);
             color: white;
-            box-shadow: 0 0 20px rgba(231, 76, 60, 0.5);
+            box-shadow: 0 0 12px rgba(231, 76, 60, 0.5);
         }
 
         #zapBtn {
             background: linear-gradient(135deg, #f1c40f, #f39c12);
             color: #333;
-            box-shadow: 0 0 20px rgba(241, 196, 15, 0.5);
+            box-shadow: 0 0 12px rgba(241, 196, 15, 0.5);
         }
 
         #neutralBtn {
             background: linear-gradient(135deg, #95a5a6, #7f8c8d);
             color: white;
-            box-shadow: 0 0 20px rgba(149, 165, 166, 0.5);
+            box-shadow: 0 0 12px rgba(149, 165, 166, 0.5);
         }
 
         #gameOver {
@@ -261,6 +262,90 @@
             spellAssignments: {}
         };
 
+        // Enemy node network (mirrored, display only for now)
+        const enemyNodeNetwork = {
+            centerX: 0,
+            centerY: 0,
+            scale: 1.5,  // Same scale as player
+            functionalRadius: 21,
+            pathwayRadius: 9,
+
+            // Node definitions: mirrored positions (x flipped)
+            nodes: {
+                // Functional nodes (6)
+                head:       { x: 0, y: -85, type: NODE_TYPE_FUNCTIONAL },
+                center:     { x: 0, y: -20, type: NODE_TYPE_FUNCTIONAL },
+                leftHand:   { x: 75, y: -15, type: NODE_TYPE_FUNCTIONAL },  // Mirrored
+                rightHand:  { x: -75, y: -15, type: NODE_TYPE_FUNCTIONAL }, // Mirrored
+                leftFoot:   { x: 30, y: 85, type: NODE_TYPE_FUNCTIONAL },   // Mirrored
+                rightFoot:  { x: -30, y: 85, type: NODE_TYPE_FUNCTIONAL },  // Mirrored
+
+                // Pathway nodes (9) - mirrored
+                neck:           { x: 0, y: -60, type: NODE_TYPE_PATHWAY },
+                leftShoulder:   { x: 25, y: -35, type: NODE_TYPE_PATHWAY },  // Mirrored
+                rightShoulder:  { x: -25, y: -35, type: NODE_TYPE_PATHWAY }, // Mirrored
+                leftElbow:      { x: 50, y: -25, type: NODE_TYPE_PATHWAY },  // Mirrored
+                rightElbow:     { x: -50, y: -25, type: NODE_TYPE_PATHWAY }, // Mirrored
+                leftHip:        { x: 15, y: 20, type: NODE_TYPE_PATHWAY },   // Mirrored
+                rightHip:       { x: -15, y: 20, type: NODE_TYPE_PATHWAY },  // Mirrored
+                leftKnee:       { x: 25, y: 55, type: NODE_TYPE_PATHWAY },   // Mirrored
+                rightKnee:      { x: -25, y: 55, type: NODE_TYPE_PATHWAY }   // Mirrored
+            },
+
+            // Same connections as player
+            connections: {
+                head: ['neck'],
+                neck: ['head', 'center'],
+                center: ['neck', 'leftShoulder', 'rightShoulder', 'leftHip', 'rightHip'],
+                leftShoulder: ['center', 'leftElbow'],
+                leftElbow: ['leftShoulder', 'leftHand'],
+                leftHand: ['leftElbow'],
+                rightShoulder: ['center', 'rightElbow'],
+                rightElbow: ['rightShoulder', 'rightHand'],
+                rightHand: ['rightElbow'],
+                leftHip: ['center', 'leftKnee'],
+                leftKnee: ['leftHip', 'leftFoot'],
+                leftFoot: ['leftKnee'],
+                rightHip: ['center', 'rightKnee'],
+                rightKnee: ['rightHip', 'rightFoot'],
+                rightFoot: ['rightKnee']
+            },
+
+            // Spell assignments (separate random from player)
+            spellAssignments: {}
+        };
+
+        // Enemy node names (same structure as player)
+        const enemyNodeNames = Object.keys(enemyNodeNetwork.nodes);
+        const enemyFunctionalNodeNames = enemyNodeNames.filter(n => enemyNodeNetwork.nodes[n].type === NODE_TYPE_FUNCTIONAL);
+        const enemyPathwayNodeNames = enemyNodeNames.filter(n => enemyNodeNetwork.nodes[n].type === NODE_TYPE_PATHWAY);
+
+        // Enemy node states and activation tracking
+        let enemyNodeStates = {};
+        let enemyNodeActivationProgress = {};
+        let enemyNodeActivationStartTime = {};
+
+        // Enemy awareness state - mirrors player awareness system
+        let enemyAwarenessPos = { x: 0, y: 0 };
+        let enemyAwarenessAtNode = 'center';
+        let enemyAwarenessPath = [];
+        let enemyAwarenessPathIndex = 0;
+        let enemyAwarenessMoving = false;
+        let enemyAwarenessMoveStartTime = 0;
+        let enemyAwarenessMoveStartPos = { x: 0, y: 0 };
+        let enemyAwarenessCurrentTarget = null;
+        const enemyAwarenessStepTime = 1000;   // 1s per step (player has 300ms) - ~3x slower travel
+
+        // Enemy AI state
+        let enemyAINextDecisionTime = 0;
+        const enemyAIDecisionDelay = 500;  // Wait 0.5s after arriving before picking next target
+
+        // Enemy node activation time (3x slower than player)
+        const enemyNodeActivationTime = 6000; // 6 seconds (player has 2 seconds)
+
+        // Enemy active mana (now dynamic, starts at 0)
+        let enemyActiveMana = 0;
+
         // List of all node names
         const allNodeNames = Object.keys(nodeNetwork.nodes);
         const functionalNodeNames = allNodeNames.filter(n => nodeNetwork.nodes[n].type === NODE_TYPE_FUNCTIONAL);
@@ -286,14 +371,15 @@
 
         // Active mana counters
         let playerActiveMana = 0;
-        const enemyActiveMana = 3; // Fixed value for now
+        // enemyActiveMana is now declared above with enemy awareness state (starts at 0)
 
         // Beam type commitment system
         let playerBeamType = null; // Currently committed beam type
         let enemyBeamType = null; // Enemy's current beam type
         let enemyBeamSwitchTime = 0; // When enemy will switch beams
         const enemyBeamDuration = 4000 + Math.random() * 4000; // 4-8 seconds between switches
-        const counterBonus = 3; // +3 or -3 based on counter
+        const counterDebuff = 3; // Base debuff when countered
+        const maxManaDebuff = 6; // Doubled debuff when counter-er is at max mana (6)
 
         // Cooldown system
         let cooldowns = {
@@ -335,11 +421,35 @@
             return -1; // b beats a
         }
 
-        // Get counter modifier for player
-        function getCounterModifier() {
+        // Get debuff applied to ENEMY when player counters them
+        // Returns positive number (amount to subtract from enemy mana)
+        function getEnemyManaDebuff() {
             if (!playerBeamType || !enemyBeamType) return 0;
             const result = getCounterResult(playerBeamType, enemyBeamType);
-            return result * counterBonus; // +3 if countering, -3 if countered, 0 if tie
+            if (result === 1) {
+                // Player counters enemy - enemy gets debuffed
+                // Double debuff if player is at max mana
+                return playerActiveMana >= 6 ? maxManaDebuff : counterDebuff;
+            }
+            return 0;
+        }
+
+        // Get debuff applied to PLAYER when enemy counters them
+        // Returns positive number (amount to subtract from player mana)
+        function getPlayerManaDebuff() {
+            if (!playerBeamType || !enemyBeamType) return 0;
+            const result = getCounterResult(playerBeamType, enemyBeamType);
+            if (result === -1) {
+                // Enemy counters player - player gets debuffed
+                // Double debuff if enemy is at max mana
+                return enemyActiveMana >= 6 ? maxManaDebuff : counterDebuff;
+            }
+            return 0;
+        }
+
+        // Legacy function for compatibility - now returns 0 since we use debuffs
+        function getCounterModifier() {
+            return 0; // No longer used - see getPlayerManaDebuff/getEnemyManaDebuff
         }
 
         // ============================================
@@ -436,6 +546,215 @@
                     nodeNetwork.spellAssignments[nodeName] = 'dud';
                 }
             });
+        }
+
+        // Initialize enemy node network (display only - separate random assignment)
+        function initEnemyNodeNetwork() {
+            const spells = [SPIRAL, PULSE, ZAP];
+
+            // Shuffle enemy functional node names (independent from player)
+            const shuffledNodes = [...enemyFunctionalNodeNames].sort(() => Math.random() - 0.5);
+
+            // First 3 get spells, rest are duds (same distribution as player but random)
+            enemyNodeNetwork.spellAssignments = {};
+            shuffledNodes.forEach((nodeName, index) => {
+                if (index < 3) {
+                    enemyNodeNetwork.spellAssignments[nodeName] = spells[index];
+                } else {
+                    enemyNodeNetwork.spellAssignments[nodeName] = 'dud';
+                }
+            });
+
+            // Initialize all enemy nodes as dormant (display only for now)
+            enemyNodeStates = {};
+            enemyFunctionalNodeNames.forEach(name => {
+                enemyNodeStates[name] = 'dormant';
+                enemyNodeActivationProgress[name] = 0;
+            });
+
+            // Reset enemy mana
+            enemyActiveMana = 0;
+        }
+
+        // ============================================
+        // ENEMY AWARENESS & AI SYSTEM
+        // ============================================
+
+        // Initialize enemy awareness at center node
+        function initEnemyAwareness() {
+            enemyAwarenessAtNode = 'center';
+            enemyAwarenessPath = [];
+            enemyAwarenessPathIndex = 0;
+            enemyAwarenessMoving = false;
+            enemyAwarenessCurrentTarget = null;
+            enemyAINextDecisionTime = performance.now() + 1000; // Wait 1s before first move
+            // Start activating the center node
+            startEnemyNodeActivation('center');
+        }
+
+        // Start activating an enemy node
+        function startEnemyNodeActivation(nodeName) {
+            if (enemyNodeNetwork.nodes[nodeName]?.type !== NODE_TYPE_FUNCTIONAL) return;
+
+            if (enemyNodeStates[nodeName] === 'dormant') {
+                enemyNodeStates[nodeName] = 'activating';
+                enemyNodeActivationStartTime[nodeName] = performance.now();
+                enemyNodeActivationProgress[nodeName] = 0;
+            }
+        }
+
+        // Update enemy node activation progress
+        function updateEnemyNodeActivation(timestamp) {
+            enemyFunctionalNodeNames.forEach(nodeName => {
+                if (enemyNodeStates[nodeName] === 'activating') {
+                    // Only progress if enemy awareness is at this node
+                    if (enemyAwarenessAtNode === nodeName) {
+                        const elapsed = timestamp - enemyNodeActivationStartTime[nodeName];
+                        enemyNodeActivationProgress[nodeName] = Math.min(1, elapsed / enemyNodeActivationTime);
+
+                        if (enemyNodeActivationProgress[nodeName] >= 1) {
+                            enemyNodeStates[nodeName] = 'active';
+                            enemyActiveMana = Math.min(6, enemyActiveMana + 1);
+                        }
+                    }
+                }
+            });
+        }
+
+        // Find path for enemy awareness (uses same BFS as player)
+        function findEnemyPath(startNode, endNode) {
+            if (startNode === endNode) return [startNode];
+            if (!startNode || !endNode) return [];
+
+            const visited = new Set();
+            const queue = [[startNode]];
+            visited.add(startNode);
+
+            while (queue.length > 0) {
+                const path = queue.shift();
+                const currentNode = path[path.length - 1];
+
+                const neighbors = enemyNodeNetwork.connections[currentNode] || [];
+                for (const neighbor of neighbors) {
+                    if (neighbor === endNode) {
+                        return [...path, neighbor];
+                    }
+                    if (!visited.has(neighbor)) {
+                        visited.add(neighbor);
+                        queue.push([...path, neighbor]);
+                    }
+                }
+            }
+
+            return [];
+        }
+
+        // Move enemy awareness to a target node
+        function moveEnemyAwarenessTo(targetNode) {
+            if (enemyAwarenessMoving) return;
+            if (enemyAwarenessAtNode === targetNode) return;
+            if (!enemyAwarenessAtNode) return;
+
+            const path = findEnemyPath(enemyAwarenessAtNode, targetNode);
+            if (path.length < 2) return;
+
+            enemyAwarenessPath = path.slice(1);
+            enemyAwarenessPathIndex = 0;
+            enemyAwarenessCurrentTarget = enemyAwarenessPath[0];
+            enemyAwarenessMoving = true;
+            enemyAwarenessMoveStartTime = performance.now();
+            enemyAwarenessMoveStartPos = { ...enemyAwarenessPos };
+            enemyAwarenessAtNode = null;
+        }
+
+        // Update enemy awareness position
+        function updateEnemyAwareness(timestamp) {
+            // Update network center position
+            enemyNodeNetwork.centerX = canvas.width - 160;
+            enemyNodeNetwork.centerY = canvas.height - 185;
+
+            if (enemyAwarenessMoving && enemyAwarenessPath.length > 0) {
+                const elapsed = timestamp - enemyAwarenessMoveStartTime;
+                const progress = Math.min(1, elapsed / enemyAwarenessStepTime);
+                const eased = 1 - Math.pow(1 - progress, 2);
+
+                const targetPos = getEnemyNodePosition(enemyAwarenessCurrentTarget);
+                enemyAwarenessPos.x = enemyAwarenessMoveStartPos.x + (targetPos.x - enemyAwarenessMoveStartPos.x) * eased;
+                enemyAwarenessPos.y = enemyAwarenessMoveStartPos.y + (targetPos.y - enemyAwarenessMoveStartPos.y) * eased;
+
+                if (progress >= 1) {
+                    enemyAwarenessAtNode = enemyAwarenessCurrentTarget;
+                    enemyAwarenessPos = { ...targetPos };
+                    enemyAwarenessPathIndex++;
+
+                    if (enemyAwarenessPathIndex < enemyAwarenessPath.length) {
+                        enemyAwarenessCurrentTarget = enemyAwarenessPath[enemyAwarenessPathIndex];
+                        enemyAwarenessMoveStartTime = timestamp;
+                        enemyAwarenessMoveStartPos = { ...enemyAwarenessPos };
+                    } else {
+                        enemyAwarenessMoving = false;
+                        enemyAwarenessPath = [];
+                        enemyAwarenessPathIndex = 0;
+                        enemyAwarenessCurrentTarget = null;
+
+                        // Start activating if it's a functional node
+                        startEnemyNodeActivation(enemyAwarenessAtNode);
+
+                        // Schedule next AI decision
+                        enemyAINextDecisionTime = timestamp + enemyAIDecisionDelay;
+                    }
+                }
+            } else if (!enemyAwarenessMoving && enemyAwarenessAtNode) {
+                const currentPos = getEnemyNodePosition(enemyAwarenessAtNode);
+                enemyAwarenessPos = { ...currentPos };
+            }
+        }
+
+        // Enemy AI: Pick next target node
+        function enemyAIPickTarget() {
+            // Get list of inactive functional nodes
+            const inactiveNodes = enemyFunctionalNodeNames.filter(name =>
+                enemyNodeStates[name] !== 'active'
+            );
+
+            if (inactiveNodes.length === 0) return null;
+
+            // Prioritize spell nodes over duds
+            const spellNodes = inactiveNodes.filter(name =>
+                enemyNodeNetwork.spellAssignments[name] !== 'dud'
+            );
+            const dudNodes = inactiveNodes.filter(name =>
+                enemyNodeNetwork.spellAssignments[name] === 'dud'
+            );
+
+            // 70% chance to pick spell node if available, otherwise dud
+            let candidates = spellNodes.length > 0 && Math.random() < 0.7 ? spellNodes : inactiveNodes;
+
+            // Pick random from candidates
+            return candidates[Math.floor(Math.random() * candidates.length)];
+        }
+
+        // Update enemy AI decision making
+        function updateEnemyAI(timestamp) {
+            if (!gameActive) return;
+
+            // Only make decisions when not moving and it's time
+            if (!enemyAwarenessMoving && timestamp >= enemyAINextDecisionTime) {
+                // Check if current node is still activating
+                if (enemyAwarenessAtNode && enemyNodeStates[enemyAwarenessAtNode] === 'activating') {
+                    // Stay and wait for activation to complete
+                    return;
+                }
+
+                // Pick next target
+                const target = enemyAIPickTarget();
+                if (target && target !== enemyAwarenessAtNode) {
+                    moveEnemyAwarenessTo(target);
+                } else {
+                    // No valid targets or already there, check again later
+                    enemyAINextDecisionTime = timestamp + 1000;
+                }
+            }
         }
 
         // Get color for a node based on its spell assignment
@@ -778,6 +1097,250 @@
             ctx.restore();
         }
 
+        // Get enemy node world position
+        function getEnemyNodePosition(nodeName) {
+            const nodeInfo = enemyNodeNetwork.nodes[nodeName];
+            if (!nodeInfo) return { x: 0, y: 0 };
+
+            return {
+                x: enemyNodeNetwork.centerX + nodeInfo.x * enemyNodeNetwork.scale,
+                y: enemyNodeNetwork.centerY + nodeInfo.y * enemyNodeNetwork.scale
+            };
+        }
+
+        // Get enemy node radius based on type
+        function getEnemyNodeRadius(nodeName) {
+            const nodeInfo = enemyNodeNetwork.nodes[nodeName];
+            if (!nodeInfo) return enemyNodeNetwork.pathwayRadius;
+
+            return nodeInfo.type === NODE_TYPE_FUNCTIONAL
+                ? enemyNodeNetwork.functionalRadius
+                : enemyNodeNetwork.pathwayRadius;
+        }
+
+        // Get color for enemy node based on its spell assignment
+        function getEnemyNodeColor(nodeName) {
+            const nodeInfo = enemyNodeNetwork.nodes[nodeName];
+            if (!nodeInfo) return '#666666';
+
+            // Pathway nodes are always grey
+            if (nodeInfo.type === NODE_TYPE_PATHWAY) return '#555555';
+
+            // Functional nodes get spell color or dud grey
+            const spell = enemyNodeNetwork.spellAssignments[nodeName];
+            if (spell === 'dud') return '#666666';
+            return colors[spell] || '#666666';
+        }
+
+        // Draw the enemy node network (display only - mirrored on right side)
+        function drawEnemyNodeNetwork() {
+            // Position below enemy wizard (right side)
+            enemyNodeNetwork.centerX = canvas.width - 160;
+            enemyNodeNetwork.centerY = canvas.height - 185;
+
+            const cx = enemyNodeNetwork.centerX;
+            const cy = enemyNodeNetwork.centerY;
+
+            ctx.save();
+
+            // Draw background panel
+            ctx.fillStyle = 'rgba(40, 20, 40, 0.7)';  // Slightly purple tint for enemy
+            ctx.strokeStyle = 'rgba(150, 100, 150, 0.5)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.roundRect(cx - 140, cy - 150, 280, 310, 10);
+            ctx.fill();
+            ctx.stroke();
+
+            // Draw all connections (edges between nodes)
+            ctx.strokeStyle = 'rgba(120, 100, 120, 0.6)';
+            ctx.lineWidth = 2;
+            ctx.lineCap = 'round';
+
+            const drawnEdges = new Set();
+            for (const nodeName of enemyNodeNames) {
+                const nodePos = getEnemyNodePosition(nodeName);
+                const neighbors = enemyNodeNetwork.connections[nodeName] || [];
+
+                for (const neighbor of neighbors) {
+                    // Avoid drawing same edge twice
+                    const edgeKey = [nodeName, neighbor].sort().join('-');
+                    if (drawnEdges.has(edgeKey)) continue;
+                    drawnEdges.add(edgeKey);
+
+                    const neighborPos = getEnemyNodePosition(neighbor);
+                    ctx.beginPath();
+                    ctx.moveTo(nodePos.x, nodePos.y);
+                    ctx.lineTo(neighborPos.x, neighborPos.y);
+                    ctx.stroke();
+                }
+            }
+
+            // Draw pathway nodes (small grey dots)
+            enemyPathwayNodeNames.forEach(nodeName => {
+                const pos = getEnemyNodePosition(nodeName);
+                const radius = getEnemyNodeRadius(nodeName);
+
+                // Simple grey dot
+                ctx.fillStyle = 'rgba(100, 80, 100, 0.8)';
+                ctx.beginPath();
+                ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Subtle outline
+                ctx.strokeStyle = 'rgba(140, 120, 140, 0.6)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+                ctx.stroke();
+            });
+
+            // Draw functional nodes (larger, colored) - with all states
+            enemyFunctionalNodeNames.forEach(nodeName => {
+                const pos = getEnemyNodePosition(nodeName);
+                const radius = getEnemyNodeRadius(nodeName);
+                const color = getEnemyNodeColor(nodeName);
+                const spell = enemyNodeNetwork.spellAssignments[nodeName];
+                const state = enemyNodeStates[nodeName] || 'dormant';
+                const activationProg = enemyNodeActivationProgress[nodeName] || 0;
+
+                if (state === 'dormant') {
+                    // DORMANT: dim, outline only
+                    ctx.strokeStyle = hexToRgba(color, 0.4);
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+                    ctx.stroke();
+
+                    // Very faint fill
+                    ctx.fillStyle = hexToRgba(color, 0.1);
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+                    ctx.fill();
+
+                } else if (state === 'activating') {
+                    // ACTIVATING: dim node with circular progress bar
+                    ctx.fillStyle = hexToRgba(color, 0.25);
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    ctx.strokeStyle = hexToRgba(color, 0.5);
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+                    ctx.stroke();
+
+                    // Progress bar
+                    const progressRadius = radius + 5;
+                    const startAngle = -Math.PI / 2;
+                    const endAngle = startAngle + (activationProg * Math.PI * 2);
+
+                    ctx.strokeStyle = hexToRgba(color, 0.2);
+                    ctx.lineWidth = 4;
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, progressRadius, 0, Math.PI * 2);
+                    ctx.stroke();
+
+                    ctx.strokeStyle = color;
+                    ctx.lineWidth = 4;
+                    ctx.lineCap = 'round';
+                    ctx.shadowColor = color;
+                    ctx.shadowBlur = 8;
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, progressRadius, startAngle, endAngle);
+                    ctx.stroke();
+                    ctx.shadowBlur = 0;
+                    ctx.lineCap = 'butt';
+
+                } else if (state === 'active') {
+                    // ACTIVE: bright, glowing
+                    const glowSize = radius + 10 + Math.sin(animationTime * 4) * 2;
+                    const glowGradient = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, glowSize);
+                    glowGradient.addColorStop(0, hexToRgba(color, 0.8));
+                    glowGradient.addColorStop(0.4, hexToRgba(color, 0.4));
+                    glowGradient.addColorStop(0.7, hexToRgba(color, 0.15));
+                    glowGradient.addColorStop(1, hexToRgba(color, 0));
+                    ctx.fillStyle = glowGradient;
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, glowSize, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    ctx.fillStyle = color;
+                    ctx.shadowColor = color;
+                    ctx.shadowBlur = 15;
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    ctx.strokeStyle = '#fff';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.shadowBlur = 0;
+
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, radius * 0.4, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                // Label for spell type
+                if (spell && spell !== 'dud') {
+                    ctx.fillStyle = state === 'active' ? '#fff' : hexToRgba('#fff', 0.4);
+                    ctx.font = state === 'active' ? 'bold 10px Georgia' : '9px Georgia';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    const label = spell.charAt(0).toUpperCase();
+                    ctx.fillText(label, pos.x, pos.y);
+                }
+            });
+
+            // Draw enemy awareness indicator (pulsing ring - slightly different color than player)
+            const awPulse = Math.sin(animationTime * 6) * 0.3 + 0.7;
+            const currentRadius = enemyAwarenessAtNode ? getEnemyNodeRadius(enemyAwarenessAtNode) : enemyNodeNetwork.pathwayRadius;
+            const awSize = currentRadius + 6 + Math.sin(animationTime * 4) * 3;
+
+            // Outer glow (purple tint for enemy)
+            const awGlow = ctx.createRadialGradient(
+                enemyAwarenessPos.x, enemyAwarenessPos.y, awSize - 4,
+                enemyAwarenessPos.x, enemyAwarenessPos.y, awSize + 12
+            );
+            awGlow.addColorStop(0, `rgba(255, 200, 255, ${awPulse * 0.5})`);
+            awGlow.addColorStop(0.5, `rgba(220, 180, 255, ${awPulse * 0.3})`);
+            awGlow.addColorStop(1, 'rgba(220, 180, 255, 0)');
+            ctx.fillStyle = awGlow;
+            ctx.beginPath();
+            ctx.arc(enemyAwarenessPos.x, enemyAwarenessPos.y, awSize + 12, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Bright ring (purple tint)
+            ctx.strokeStyle = `rgba(255, 200, 255, ${awPulse})`;
+            ctx.lineWidth = 3;
+            ctx.shadowColor = '#f0f';
+            ctx.shadowBlur = 15;
+            ctx.beginPath();
+            ctx.arc(enemyAwarenessPos.x, enemyAwarenessPos.y, awSize, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // Inner ring
+            ctx.strokeStyle = `rgba(255, 220, 255, ${awPulse * 0.8})`;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(enemyAwarenessPos.x, enemyAwarenessPos.y, awSize - 4, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+
+            // Title
+            ctx.fillStyle = '#c9a';
+            ctx.font = 'bold 14px Georgia';
+            ctx.textAlign = 'center';
+            ctx.fillText('ENEMY NODES', cx, cy - 135);
+
+            ctx.restore();
+        }
+
         // Spell types
         const NEUTRAL = 'neutral';
         const SPIRAL = 'spiral';
@@ -904,8 +1467,10 @@
             particles = [];
             clashFlashIntensity = 0;
             initStickFigureNodes();
+            initEnemyNodeNetwork();
             initNodeStates();
             initStickAwareness();
+            initEnemyAwareness();
             initBoostAndCooldowns();
             updateButtonStates();
         }
@@ -967,9 +1532,20 @@
         function getEffectiveMana() {
             let effective = playerActiveMana;
 
-            // Add counter modifier based on beam matchup
-            const modifier = getCounterModifier();
-            effective += modifier;
+            // Apply debuff if enemy is countering us
+            const debuff = getPlayerManaDebuff();
+            effective -= debuff;
+
+            // Floor at 0 (can't have negative effective mana)
+            return Math.max(0, effective);
+        }
+
+        function getEffectiveEnemyMana() {
+            let effective = enemyActiveMana;
+
+            // Apply debuff if player is countering enemy
+            const debuff = getEnemyManaDebuff();
+            effective -= debuff;
 
             // Floor at 0 (can't have negative effective mana)
             return Math.max(0, effective);
@@ -1790,8 +2366,9 @@
         function drawTimer() {
             if (!gameActive) return;
 
-            const manaDiff = getEffectiveMana() - enemyActiveMana;
-            const counterMod = getCounterModifier();
+            const manaDiff = getEffectiveMana() - getEffectiveEnemyMana();
+            const playerDebuff = getPlayerManaDebuff();
+            const enemyDebuff = getEnemyManaDebuff();
 
             ctx.font = '20px Georgia';
             ctx.textAlign = 'center';
@@ -1854,9 +2431,11 @@
 
         function drawActiveMana() {
             const effectiveMana = getEffectiveMana();
-            const counterMod = getCounterModifier();
-            const isCountering = counterMod > 0;
-            const isCountered = counterMod < 0;
+            const effectiveEnemyMana = getEffectiveEnemyMana();
+            const playerDebuff = getPlayerManaDebuff();
+            const enemyDebuff = getEnemyManaDebuff();
+            const isCountering = enemyDebuff > 0;
+            const isCountered = playerDebuff > 0;
 
             // Player active mana (left side)
             ctx.textAlign = 'left';
@@ -1893,14 +2472,13 @@
                 ctx.fillText('Beam: NONE', 32, 118);
             }
 
-            // Player mana with modifier
+            // Player mana with debuff if being countered
             ctx.font = 'bold 14px Georgia';
             let manaText = `Mana: ${playerActiveMana}`;
             let manaColor = '#3498db';
-            if (counterMod !== 0) {
-                const sign = counterMod > 0 ? '+' : '';
-                manaText += ` ${sign}${counterMod} = ${effectiveMana}`;
-                manaColor = isCountering ? '#2ecc71' : '#e74c3c';
+            if (playerDebuff > 0) {
+                manaText += ` -${playerDebuff} = ${effectiveMana}`;
+                manaColor = '#e74c3c';
             }
             ctx.fillStyle = manaColor;
             ctx.shadowColor = manaColor;
@@ -1911,23 +2489,31 @@
             // Counter status
             ctx.font = '12px Georgia';
             if (isCountering) {
+                const debuffText = enemyDebuff === 6 ? '-6 (MAX!)' : '-3';
                 ctx.fillStyle = '#2ecc71';
-                ctx.fillText('COUNTERING! (+3)', 32, 155);
+                ctx.fillText(`COUNTERING! (Enemy ${debuffText})`, 32, 155);
             } else if (isCountered) {
+                const debuffText = playerDebuff === 6 ? '-6 (MAX!)' : '-3';
                 ctx.fillStyle = '#e74c3c';
-                ctx.fillText('COUNTERED! (-3)', 32, 155);
+                ctx.fillText(`COUNTERED! (You ${debuffText})`, 32, 155);
             } else if (playerBeamType && enemyBeamType) {
                 ctx.fillStyle = '#f1c40f';
-                ctx.fillText('NEUTRAL', 32, 155);
+                ctx.fillText('NEUTRAL MATCHUP', 32, 155);
             }
 
             // Enemy active mana (right side)
             ctx.textAlign = 'right';
             ctx.font = 'bold 16px Georgia';
 
-            // Background box for enemy
-            ctx.fillStyle = 'rgba(20, 20, 40, 0.8)';
-            ctx.strokeStyle = enemyBeamType ? colors[enemyBeamType] : 'rgba(155, 89, 182, 0.5)';
+            // Background box for enemy - highlight if being countered
+            let enemyBoxColor = 'rgba(20, 20, 40, 0.8)';
+            let enemyBorderColor = enemyBeamType ? colors[enemyBeamType] : 'rgba(155, 89, 182, 0.5)';
+            if (isCountering) {
+                enemyBoxColor = 'rgba(60, 30, 30, 0.9)';
+                enemyBorderColor = 'rgba(255, 100, 100, 0.8)';
+            }
+            ctx.fillStyle = enemyBoxColor;
+            ctx.strokeStyle = enemyBorderColor;
             ctx.lineWidth = 3;
             ctx.beginPath();
             ctx.roundRect(canvas.width - 220, 100, 200, 65, 8);
@@ -1944,12 +2530,18 @@
                 ctx.shadowBlur = 0;
             }
 
-            // Enemy mana
+            // Enemy mana with debuff if being countered
             ctx.font = 'bold 14px Georgia';
-            ctx.fillStyle = '#9b59b6';
-            ctx.shadowColor = '#9b59b6';
+            let enemyManaText = `Mana: ${enemyActiveMana}`;
+            let enemyManaColor = '#9b59b6';
+            if (enemyDebuff > 0) {
+                enemyManaText += ` -${enemyDebuff} = ${effectiveEnemyMana}`;
+                enemyManaColor = '#e74c3c';
+            }
+            ctx.fillStyle = enemyManaColor;
+            ctx.shadowColor = enemyManaColor;
             ctx.shadowBlur = 8;
-            ctx.fillText(`Mana: ${enemyActiveMana}`, canvas.width - 32, 138);
+            ctx.fillText(enemyManaText, canvas.width - 32, 138);
             ctx.shadowBlur = 0;
 
             // Show what beats enemy's beam
@@ -1999,9 +2591,14 @@
             updateCooldownDisplay();
             updateEnemyBeam(timestamp);
 
+            // Enemy AI updates
+            updateEnemyAwareness(timestamp);
+            updateEnemyNodeActivation(timestamp);
+            updateEnemyAI(timestamp);
+
             if (gameActive) {
                 // Continuous tug-of-war based on active mana difference
-                const manaDiff = getEffectiveMana() - enemyActiveMana;
+                const manaDiff = getEffectiveMana() - getEffectiveEnemyMana();
                 // Move 1% per second per mana difference
                 const pushRate = 1.0; // percent per second per mana diff
                 const deltaTime = 1 / 60; // approximate frame time
@@ -2022,6 +2619,7 @@
             drawBeams();
             drawBeamMeter();
             drawStickFigure();
+            drawEnemyNodeNetwork();
             drawWizard(100, canvas.height / 2, true, colors[playerChoice]);
             drawWizard(canvas.width - 100, canvas.height / 2, false, colors[enemyBeamType] || '#9b59b6');
             updateAndDrawParticles();
@@ -2038,8 +2636,10 @@
         updateButtonStates();
         pickNewEnemyBeam();
         initStickFigureNodes();
+        initEnemyNodeNetwork();
         initNodeStates();
         initStickAwareness();
+        initEnemyAwareness();
         initBoostAndCooldowns();
         requestAnimationFrame(gameLoop);
     </script>
