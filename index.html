@@ -80,7 +80,7 @@
             box-shadow: 0 0 12px rgba(241, 196, 15, 0.5);
         }
 
-        #neutralBtn {
+        #suppressBtn {
             background: linear-gradient(135deg, #95a5a6, #7f8c8d);
             color: white;
             box-shadow: 0 0 12px rgba(149, 165, 166, 0.5);
@@ -148,7 +148,7 @@
     <canvas id="gameCanvas"></canvas>
 
     <div id="controls">
-        <button id="neutralBtn" class="spell-btn">Neutral</button>
+        <button id="suppressBtn" class="spell-btn">SUPPRESS</button>
         <button id="spiralBtn" class="spell-btn">Spiral</button>
         <button id="pulseBtn" class="spell-btn">Pulse</button>
         <button id="zapBtn" class="spell-btn">Zap</button>
@@ -164,7 +164,7 @@
     <script>
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
-        const neutralBtn = document.getElementById('neutralBtn');
+        const suppressBtn = document.getElementById('suppressBtn');
         const spiralBtn = document.getElementById('spiralBtn');
         const pulseBtn = document.getElementById('pulseBtn');
         const zapBtn = document.getElementById('zapBtn');
@@ -175,11 +175,25 @@
 
         // Game state
         let ballPosition = 50; // 0-100, starts at center
-        let playerChoice = 'neutral'; // Start with Neutral as default (safe, no modifier)
+        let playerChoice = 'suppress'; // Will be overridden by center beam type at game start
         let lastClashTime = 0;
         let clashInterval = 2000; // 2 seconds
         let gameActive = true;
         let animationTime = 0;
+
+        // HP System (FTL-style pips)
+        const MAX_HP = 30;
+        let playerHP = MAX_HP;
+        let enemyHP = MAX_HP;
+
+        // Targeting mode state (for Mana Shards)
+        let hoveredEnemyNode = null;  // Currently hovered enemy node name
+
+        // Mana Shards projectile system
+        let manaShardProjectile = null;  // Active projectile or null
+        const projectileTravelTime = 850; // ~0.85 seconds
+        let projectileTrailParticles = [];  // Separate particle array for trail
+        let manaShardImpactFlash = null;  // Impact flash effect state
 
         // Enemy AI state (sticky random)
         let enemyCurrentBeam = null;
@@ -324,6 +338,11 @@
         let enemyNodeStates = {};
         let enemyNodeActivationProgress = {};
         let enemyNodeActivationStartTime = {};
+        let enemyNodeDamaged = {};  // Track which nodes are damaged (true/false)
+        let enemyNodeRepairing = {};  // Track which nodes are being repaired
+        let enemyNodeRepairProgress = {};
+        let enemyNodeRepairStartTime = {};
+        const enemyNodeRepairTime = 3000;  // 3 seconds to repair
 
         // Enemy awareness state - mirrors player awareness system
         let enemyAwarenessPos = { x: 0, y: 0 };
@@ -367,7 +386,16 @@
         let nodeStates = {};
         let nodeActivationProgress = {};
         let nodeActivationStartTime = {};
+        let nodeDamaged = {};  // Track which player nodes are damaged
         const nodeActivationTime = 2000; // 2 seconds to activate
+
+        // Mana Shards charging state
+        // States: 'idle' (active but not charging), 'charging', 'charged' (ready to fire)
+        let manaShardsState = 'idle';
+        let manaShardsChargeProgress = 0;
+        let manaShardsChargeStartTime = 0;
+        const manaShardsChargeTime = 3000; // 3 seconds to fully charge
+        let manaShardsNodeName = null; // Which node has Mana Shards (set during init)
 
         // Active mana counters
         let playerActiveMana = 0;
@@ -383,7 +411,7 @@
 
         // Cooldown system
         let cooldowns = {
-            neutral: 0,
+            suppress: 0,
             spiral: 0,
             pulse: 0,
             zap: 0
@@ -411,7 +439,7 @@
         // Rock-paper-scissors: returns 1 if a beats b, -1 if b beats a, 0 if tie/neutral
         function getCounterResult(a, b) {
             // Neutral always gives 0 modifier (no bonus, no penalty)
-            if (a === NEUTRAL || b === NEUTRAL) return 0;
+            if (a === SUPPRESS || b === SUPPRESS) return 0;
             if (a === b) return 0;
             if ((a === SPIRAL && b === ZAP) ||
                 (a === ZAP && b === PULSE) ||
@@ -492,12 +520,22 @@
             nodeStates = {};
             nodeActivationProgress = {};
             nodeActivationStartTime = {};
-            playerActiveMana = 0;
+            nodeDamaged = {};
 
             functionalNodeNames.forEach(name => {
-                nodeStates[name] = 'dormant';
-                nodeActivationProgress[name] = 0;
+                nodeDamaged[name] = false;
+                if (name === 'center') {
+                    // Center node starts ACTIVE - gives immediate beam type
+                    nodeStates[name] = 'active';
+                    nodeActivationProgress[name] = 1;
+                } else {
+                    nodeStates[name] = 'dormant';
+                    nodeActivationProgress[name] = 0;
+                }
             });
+
+            // Start with 1 active mana from center node
+            playerActiveMana = 1;
         }
 
         // Start activating a node (only for functional nodes)
@@ -530,50 +568,127 @@
             });
         }
 
+        // Update Mana Shards charging progress
+        function updateManaShardsCharging(timestamp) {
+            if (manaShardsState === 'charging') {
+                // Only progress if awareness is at the Mana Shards node
+                if (awarenessAtNode === manaShardsNodeName) {
+                    const elapsed = timestamp - manaShardsChargeStartTime;
+                    manaShardsChargeProgress = Math.min(1, elapsed / manaShardsChargeTime);
+
+                    if (manaShardsChargeProgress >= 1) {
+                        manaShardsState = 'charged';
+                    }
+                } else {
+                    // Awareness left - pause charging (reset timer for when they return)
+                    // Progress is preserved, but timer will restart
+                    manaShardsChargeStartTime = timestamp - (manaShardsChargeProgress * manaShardsChargeTime);
+                }
+            }
+        }
+
+        // Check if Mana Shards is currently draining mana (charging or charged)
+        function isManaShardsDrawingMana() {
+            return manaShardsState === 'charging' || manaShardsState === 'charged';
+        }
+
         // Initialize spell assignments for functional nodes
         function initStickFigureNodes() {
-            const spells = [SPIRAL, PULSE, ZAP];
+            const beamSpells = [SPIRAL, PULSE, ZAP];
 
-            // Shuffle functional node names
-            const shuffledNodes = [...functionalNodeNames].sort(() => Math.random() - 0.5);
+            // Center node ALWAYS gets a beam type
+            const shuffledBeamSpells = [...beamSpells].sort(() => Math.random() - 0.5);
+            const centerBeamType = shuffledBeamSpells[0];
+            const remainingBeamTypes = shuffledBeamSpells.slice(1); // 2 remaining beam types
 
-            // First 3 get spells, rest are duds
+            // Get non-center functional nodes and shuffle them
+            const nonCenterNodes = functionalNodeNames.filter(n => n !== 'center');
+            const shuffledNonCenterNodes = [...nonCenterNodes].sort(() => Math.random() - 0.5);
+
+            // Distribution: center gets beam type, remaining 5 nodes get:
+            // 1 Mana Shards, 2 remaining beam types, 2 duds
             nodeNetwork.spellAssignments = {};
-            shuffledNodes.forEach((nodeName, index) => {
-                if (index < 3) {
-                    nodeNetwork.spellAssignments[nodeName] = spells[index];
+            manaShardsNodeName = null;
+
+            // Assign center node its beam type
+            nodeNetwork.spellAssignments['center'] = centerBeamType;
+
+            // Assign remaining nodes
+            shuffledNonCenterNodes.forEach((nodeName, index) => {
+                if (index === 0) {
+                    nodeNetwork.spellAssignments[nodeName] = MANA_SHARDS;
+                    manaShardsNodeName = nodeName; // Track which node has Mana Shards
+                } else if (index <= 2) {
+                    nodeNetwork.spellAssignments[nodeName] = remainingBeamTypes[index - 1];
                 } else {
                     nodeNetwork.spellAssignments[nodeName] = 'dud';
                 }
             });
+
+            // Reset Mana Shards charging state
+            manaShardsState = 'idle';
+            manaShardsChargeProgress = 0;
         }
 
         // Initialize enemy node network (display only - separate random assignment)
         function initEnemyNodeNetwork() {
-            const spells = [SPIRAL, PULSE, ZAP];
+            const beamSpells = [SPIRAL, PULSE, ZAP];
 
-            // Shuffle enemy functional node names (independent from player)
-            const shuffledNodes = [...enemyFunctionalNodeNames].sort(() => Math.random() - 0.5);
+            // Center node ALWAYS gets a beam type (independent random from player)
+            const shuffledBeamSpells = [...beamSpells].sort(() => Math.random() - 0.5);
+            const centerBeamType = shuffledBeamSpells[0];
+            const remainingBeamTypes = shuffledBeamSpells.slice(1); // 2 remaining beam types
 
-            // First 3 get spells, rest are duds (same distribution as player but random)
+            // Get non-center functional nodes and shuffle them
+            const nonCenterNodes = enemyFunctionalNodeNames.filter(n => n !== 'center');
+            const shuffledNonCenterNodes = [...nonCenterNodes].sort(() => Math.random() - 0.5);
+
+            // Distribution: center gets beam type, remaining 5 nodes get:
+            // 1 Mana Shards, 2 remaining beam types, 2 duds
             enemyNodeNetwork.spellAssignments = {};
-            shuffledNodes.forEach((nodeName, index) => {
-                if (index < 3) {
-                    enemyNodeNetwork.spellAssignments[nodeName] = spells[index];
+
+            // Assign center node its beam type
+            enemyNodeNetwork.spellAssignments['center'] = centerBeamType;
+
+            // Assign remaining nodes
+            shuffledNonCenterNodes.forEach((nodeName, index) => {
+                if (index === 0) {
+                    enemyNodeNetwork.spellAssignments[nodeName] = MANA_SHARDS;
+                } else if (index <= 2) {
+                    enemyNodeNetwork.spellAssignments[nodeName] = remainingBeamTypes[index - 1];
                 } else {
                     enemyNodeNetwork.spellAssignments[nodeName] = 'dud';
                 }
             });
 
-            // Initialize all enemy nodes as dormant (display only for now)
+            // Initialize enemy nodes - center starts ACTIVE
             enemyNodeStates = {};
+            enemyNodeDamaged = {};
+            enemyNodeRepairing = {};
+            enemyNodeRepairProgress = {};
+            enemyNodeRepairStartTime = {};
             enemyFunctionalNodeNames.forEach(name => {
-                enemyNodeStates[name] = 'dormant';
-                enemyNodeActivationProgress[name] = 0;
+                if (name === 'center') {
+                    // Center node starts ACTIVE - gives immediate beam type
+                    enemyNodeStates[name] = 'active';
+                    enemyNodeActivationProgress[name] = 1;
+                } else {
+                    enemyNodeStates[name] = 'dormant';
+                    enemyNodeActivationProgress[name] = 0;
+                }
+                enemyNodeDamaged[name] = false;
+                enemyNodeRepairing[name] = false;
+                enemyNodeRepairProgress[name] = 0;
+            });
+            // Also initialize pathway nodes as not damaged
+            enemyPathwayNodeNames.forEach(name => {
+                enemyNodeDamaged[name] = false;
+                enemyNodeRepairing[name] = false;
+                enemyNodeRepairProgress[name] = 0;
             });
 
-            // Reset enemy mana
-            enemyActiveMana = 0;
+            // Start with 1 active mana from center node
+            enemyActiveMana = 1;
         }
 
         // ============================================
@@ -592,15 +707,89 @@
             startEnemyNodeActivation('center');
         }
 
-        // Start activating an enemy node
+        // Start activating or repairing an enemy node
         function startEnemyNodeActivation(nodeName) {
             if (enemyNodeNetwork.nodes[nodeName]?.type !== NODE_TYPE_FUNCTIONAL) return;
+
+            // Check if node is damaged - start repair instead of activation
+            if (enemyNodeDamaged[nodeName]) {
+                if (!enemyNodeRepairing[nodeName]) {
+                    startEnemyNodeRepair(nodeName);
+                }
+                return;
+            }
 
             if (enemyNodeStates[nodeName] === 'dormant') {
                 enemyNodeStates[nodeName] = 'activating';
                 enemyNodeActivationStartTime[nodeName] = performance.now();
                 enemyNodeActivationProgress[nodeName] = 0;
             }
+        }
+
+        // Start repairing a damaged enemy node
+        function startEnemyNodeRepair(nodeName) {
+            if (!enemyNodeDamaged[nodeName]) return;
+            if (enemyNodeRepairing[nodeName]) return;
+
+            enemyNodeRepairing[nodeName] = true;
+            enemyNodeRepairStartTime[nodeName] = performance.now();
+            enemyNodeRepairProgress[nodeName] = 0;
+            console.log(`[ENEMY REPAIR] Started repairing: ${nodeName}`);
+        }
+
+        // Update enemy node repair progress
+        function updateEnemyNodeRepair(timestamp) {
+            enemyFunctionalNodeNames.forEach(nodeName => {
+                if (enemyNodeRepairing[nodeName]) {
+                    // Only progress if enemy awareness is at this node
+                    if (enemyAwarenessAtNode === nodeName) {
+                        const elapsed = timestamp - enemyNodeRepairStartTime[nodeName];
+                        enemyNodeRepairProgress[nodeName] = Math.min(1, elapsed / enemyNodeRepairTime);
+
+                        if (enemyNodeRepairProgress[nodeName] >= 1) {
+                            // Repair complete!
+                            enemyNodeDamaged[nodeName] = false;
+                            enemyNodeRepairing[nodeName] = false;
+                            enemyNodeRepairProgress[nodeName] = 0;
+
+                            // If node was active, remove the -1 mana penalty
+                            if (enemyNodeStates[nodeName] === 'active') {
+                                enemyActiveMana = enemyActiveMana + 1; // Remove -1 penalty (was -1, now 0)
+                                // Set to dormant - must reactivate
+                                enemyNodeStates[nodeName] = 'dormant';
+                                // Actually net change is +1 (from -1 to 0), but node goes dormant
+                            } else {
+                                // Node was dormant or activating, just clear damage
+                                enemyNodeStates[nodeName] = 'dormant';
+                            }
+
+                            console.log(`[ENEMY REPAIR] Repair complete: ${nodeName} - now dormant`);
+                        }
+                    } else {
+                        // Awareness left - pause repair (preserve progress but reset timer)
+                        enemyNodeRepairStartTime[nodeName] = timestamp - (enemyNodeRepairProgress[nodeName] * enemyNodeRepairTime);
+                    }
+                }
+            });
+
+            // Also handle pathway nodes (visual repair only, no mana effect)
+            enemyPathwayNodeNames.forEach(nodeName => {
+                if (enemyNodeRepairing[nodeName]) {
+                    if (enemyAwarenessAtNode === nodeName) {
+                        const elapsed = timestamp - enemyNodeRepairStartTime[nodeName];
+                        enemyNodeRepairProgress[nodeName] = Math.min(1, elapsed / enemyNodeRepairTime);
+
+                        if (enemyNodeRepairProgress[nodeName] >= 1) {
+                            enemyNodeDamaged[nodeName] = false;
+                            enemyNodeRepairing[nodeName] = false;
+                            enemyNodeRepairProgress[nodeName] = 0;
+                            console.log(`[ENEMY REPAIR] Pathway repair complete: ${nodeName}`);
+                        }
+                    } else {
+                        enemyNodeRepairStartTime[nodeName] = timestamp - (enemyNodeRepairProgress[nodeName] * enemyNodeRepairTime);
+                    }
+                }
+            });
         }
 
         // Update enemy node activation progress
@@ -614,7 +803,12 @@
 
                         if (enemyNodeActivationProgress[nodeName] >= 1) {
                             enemyNodeStates[nodeName] = 'active';
-                            enemyActiveMana = Math.min(6, enemyActiveMana + 1);
+                            // Damaged nodes contribute -1 mana, healthy nodes +1
+                            if (enemyNodeDamaged[nodeName]) {
+                                enemyActiveMana = enemyActiveMana - 1;
+                            } else {
+                                enemyActiveMana = Math.min(6, enemyActiveMana + 1);
+                            }
                         }
                     }
                 }
@@ -697,8 +891,19 @@
                         enemyAwarenessPathIndex = 0;
                         enemyAwarenessCurrentTarget = null;
 
-                        // Start activating if it's a functional node
+                        // Start activating if it's a functional node, or repair if damaged
                         startEnemyNodeActivation(enemyAwarenessAtNode);
+
+                        // Also check if it's a damaged pathway node - start repair
+                        if (enemyNodeDamaged[enemyAwarenessAtNode] && !enemyNodeRepairing[enemyAwarenessAtNode]) {
+                            const nodeInfo = enemyNodeNetwork.nodes[enemyAwarenessAtNode];
+                            if (nodeInfo && nodeInfo.type === NODE_TYPE_PATHWAY) {
+                                enemyNodeRepairing[enemyAwarenessAtNode] = true;
+                                enemyNodeRepairStartTime[enemyAwarenessAtNode] = performance.now();
+                                enemyNodeRepairProgress[enemyAwarenessAtNode] = 0;
+                                console.log(`[ENEMY REPAIR] Started repairing pathway: ${enemyAwarenessAtNode}`);
+                            }
+                        }
 
                         // Schedule next AI decision
                         enemyAINextDecisionTime = timestamp + enemyAIDecisionDelay;
@@ -712,12 +917,35 @@
 
         // Enemy AI: Pick next target node
         function enemyAIPickTarget() {
-            // Get list of inactive functional nodes
+            // Priority 1: Damaged functional nodes that need repair
+            const damagedFunctionalNodes = enemyFunctionalNodeNames.filter(name =>
+                enemyNodeDamaged[name] && !enemyNodeRepairing[name]
+            );
+            if (damagedFunctionalNodes.length > 0) {
+                // High priority: repair damaged nodes (especially active ones bleeding mana)
+                const bleedingNodes = damagedFunctionalNodes.filter(name =>
+                    enemyNodeStates[name] === 'active'
+                );
+                if (bleedingNodes.length > 0 && Math.random() < 0.8) {
+                    return bleedingNodes[Math.floor(Math.random() * bleedingNodes.length)];
+                }
+                if (Math.random() < 0.5) {
+                    return damagedFunctionalNodes[Math.floor(Math.random() * damagedFunctionalNodes.length)];
+                }
+            }
+
+            // Priority 2: Inactive functional nodes (dormant, need activation)
             const inactiveNodes = enemyFunctionalNodeNames.filter(name =>
-                enemyNodeStates[name] !== 'active'
+                enemyNodeStates[name] !== 'active' && !enemyNodeDamaged[name]
             );
 
-            if (inactiveNodes.length === 0) return null;
+            if (inactiveNodes.length === 0) {
+                // Check for damaged nodes as fallback
+                if (damagedFunctionalNodes.length > 0) {
+                    return damagedFunctionalNodes[Math.floor(Math.random() * damagedFunctionalNodes.length)];
+                }
+                return null;
+            }
 
             // Prioritize spell nodes over duds
             const spellNodes = inactiveNodes.filter(name =>
@@ -743,6 +971,12 @@
                 // Check if current node is still activating
                 if (enemyAwarenessAtNode && enemyNodeStates[enemyAwarenessAtNode] === 'activating') {
                     // Stay and wait for activation to complete
+                    return;
+                }
+
+                // Check if current node is repairing
+                if (enemyAwarenessAtNode && enemyNodeRepairing[enemyAwarenessAtNode]) {
+                    // Stay and wait for repair to complete
                     return;
                 }
 
@@ -1010,45 +1244,177 @@
                     ctx.lineCap = 'butt';
 
                 } else if (state === 'active') {
-                    // ACTIVE: bright, glowing
-                    const glowSize = radius + 10 + Math.sin(animationTime * 4) * 2;
-                    const glowGradient = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, glowSize);
-                    glowGradient.addColorStop(0, hexToRgba(color, 0.8));
-                    glowGradient.addColorStop(0.4, hexToRgba(color, 0.4));
-                    glowGradient.addColorStop(0.7, hexToRgba(color, 0.15));
-                    glowGradient.addColorStop(1, hexToRgba(color, 0));
-                    ctx.fillStyle = glowGradient;
-                    ctx.beginPath();
-                    ctx.arc(pos.x, pos.y, glowSize, 0, Math.PI * 2);
-                    ctx.fill();
+                    // Check if this is Mana Shards node with special charging states
+                    const isManaShards = nodeName === manaShardsNodeName;
+                    const isCharging = isManaShards && manaShardsState === 'charging';
+                    const isCharged = isManaShards && manaShardsState === 'charged';
 
-                    ctx.fillStyle = color;
-                    ctx.shadowColor = color;
-                    ctx.shadowBlur = 15;
-                    ctx.beginPath();
-                    ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
-                    ctx.fill();
+                    if (isCharging) {
+                        // CHARGING: pulsing cyan with charge progress bar
+                        const pulseScale = 1 + Math.sin(animationTime * 8) * 0.1;
+                        const glowSize = (radius + 15) * pulseScale;
 
-                    ctx.strokeStyle = '#fff';
-                    ctx.lineWidth = 2;
-                    ctx.beginPath();
-                    ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
-                    ctx.stroke();
-                    ctx.shadowBlur = 0;
+                        // Outer glow - more intense cyan
+                        const glowGradient = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, glowSize);
+                        glowGradient.addColorStop(0, 'rgba(0, 212, 255, 0.9)');
+                        glowGradient.addColorStop(0.3, 'rgba(0, 212, 255, 0.5)');
+                        glowGradient.addColorStop(0.6, 'rgba(0, 180, 255, 0.2)');
+                        glowGradient.addColorStop(1, 'rgba(0, 150, 255, 0)');
+                        ctx.fillStyle = glowGradient;
+                        ctx.beginPath();
+                        ctx.arc(pos.x, pos.y, glowSize, 0, Math.PI * 2);
+                        ctx.fill();
 
-                    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
-                    ctx.beginPath();
-                    ctx.arc(pos.x, pos.y, radius * 0.4, 0, Math.PI * 2);
-                    ctx.fill();
+                        // Core node
+                        ctx.fillStyle = color;
+                        ctx.shadowColor = '#00ffff';
+                        ctx.shadowBlur = 20;
+                        ctx.beginPath();
+                        ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.shadowBlur = 0;
+
+                        // Charge progress ring
+                        const progressRadius = radius + 8;
+                        const startAngle = -Math.PI / 2;
+                        const endAngle = startAngle + (manaShardsChargeProgress * Math.PI * 2);
+
+                        // Background ring
+                        ctx.strokeStyle = 'rgba(0, 212, 255, 0.3)';
+                        ctx.lineWidth = 5;
+                        ctx.beginPath();
+                        ctx.arc(pos.x, pos.y, progressRadius, 0, Math.PI * 2);
+                        ctx.stroke();
+
+                        // Progress ring
+                        ctx.strokeStyle = '#00ffff';
+                        ctx.lineWidth = 5;
+                        ctx.lineCap = 'round';
+                        ctx.shadowColor = '#00ffff';
+                        ctx.shadowBlur = 10;
+                        ctx.beginPath();
+                        ctx.arc(pos.x, pos.y, progressRadius, startAngle, endAngle);
+                        ctx.stroke();
+                        ctx.shadowBlur = 0;
+                        ctx.lineCap = 'butt';
+
+                    } else if (isCharged) {
+                        // CHARGED: intense pulsing, ready to fire
+                        const pulseIntensity = 0.5 + Math.sin(animationTime * 10) * 0.5;
+                        const glowSize = radius + 20 + Math.sin(animationTime * 6) * 5;
+
+                        // Intense outer glow
+                        const glowGradient = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, glowSize);
+                        glowGradient.addColorStop(0, `rgba(0, 255, 255, ${0.9 * pulseIntensity})`);
+                        glowGradient.addColorStop(0.3, `rgba(100, 255, 255, ${0.6 * pulseIntensity})`);
+                        glowGradient.addColorStop(0.6, `rgba(0, 200, 255, ${0.3 * pulseIntensity})`);
+                        glowGradient.addColorStop(1, 'rgba(0, 150, 255, 0)');
+                        ctx.fillStyle = glowGradient;
+                        ctx.beginPath();
+                        ctx.arc(pos.x, pos.y, glowSize, 0, Math.PI * 2);
+                        ctx.fill();
+
+                        // Core node - bright white/cyan
+                        ctx.fillStyle = '#00ffff';
+                        ctx.shadowColor = '#ffffff';
+                        ctx.shadowBlur = 25;
+                        ctx.beginPath();
+                        ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+                        ctx.fill();
+
+                        // White hot center
+                        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                        ctx.beginPath();
+                        ctx.arc(pos.x, pos.y, radius * 0.6, 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.shadowBlur = 0;
+
+                        // Crackling particle effect
+                        for (let i = 0; i < 6; i++) {
+                            const angle = (animationTime * 3 + i * Math.PI / 3) % (Math.PI * 2);
+                            const dist = radius + 10 + Math.sin(animationTime * 15 + i * 2) * 8;
+                            const px = pos.x + Math.cos(angle) * dist;
+                            const py = pos.y + Math.sin(angle) * dist;
+                            const particleSize = 2 + Math.sin(animationTime * 20 + i) * 1;
+
+                            ctx.fillStyle = `rgba(200, 255, 255, ${0.5 + Math.sin(animationTime * 25 + i * 3) * 0.5})`;
+                            ctx.beginPath();
+                            ctx.arc(px, py, particleSize, 0, Math.PI * 2);
+                            ctx.fill();
+                        }
+
+                        // "READY" indicator ring
+                        ctx.strokeStyle = '#ffffff';
+                        ctx.lineWidth = 2;
+                        ctx.setLineDash([4, 4]);
+                        ctx.beginPath();
+                        ctx.arc(pos.x, pos.y, radius + 12, 0, Math.PI * 2);
+                        ctx.stroke();
+                        ctx.setLineDash([]);
+
+                    } else {
+                        // NORMAL ACTIVE: bright, glowing (default behavior)
+                        const glowSize = radius + 10 + Math.sin(animationTime * 4) * 2;
+                        const glowGradient = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, glowSize);
+                        glowGradient.addColorStop(0, hexToRgba(color, 0.8));
+                        glowGradient.addColorStop(0.4, hexToRgba(color, 0.4));
+                        glowGradient.addColorStop(0.7, hexToRgba(color, 0.15));
+                        glowGradient.addColorStop(1, hexToRgba(color, 0));
+                        ctx.fillStyle = glowGradient;
+                        ctx.beginPath();
+                        ctx.arc(pos.x, pos.y, glowSize, 0, Math.PI * 2);
+                        ctx.fill();
+
+                        ctx.fillStyle = color;
+                        ctx.shadowColor = color;
+                        ctx.shadowBlur = 15;
+                        ctx.beginPath();
+                        ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+                        ctx.fill();
+
+                        ctx.strokeStyle = '#fff';
+                        ctx.lineWidth = 2;
+                        ctx.beginPath();
+                        ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+                        ctx.stroke();
+                        ctx.shadowBlur = 0;
+
+                        ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+                        ctx.beginPath();
+                        ctx.arc(pos.x, pos.y, radius * 0.4, 0, Math.PI * 2);
+                        ctx.fill();
+
+                        // Show "CLICK TO CHARGE" hint when awareness is at idle Mana Shards
+                        if (isManaShards && manaShardsState === 'idle' && awarenessAtNode === nodeName) {
+                            ctx.fillStyle = 'rgba(0, 212, 255, 0.8)';
+                            ctx.font = '9px Georgia';
+                            ctx.textAlign = 'center';
+                            ctx.fillText('CLICK', pos.x, pos.y + radius + 18);
+                        }
+                    }
                 }
 
                 // Label for spell type
                 if (spell && spell !== 'dud') {
-                    ctx.fillStyle = state === 'active' ? '#fff' : hexToRgba('#fff', 0.4);
-                    ctx.font = state === 'active' ? 'bold 10px Georgia' : '9px Georgia';
+                    const isManaShards = nodeName === manaShardsNodeName;
+                    const isCharging = isManaShards && manaShardsState === 'charging';
+                    const isCharged = isManaShards && manaShardsState === 'charged';
+
+                    // Special label styling for charging/charged Mana Shards
+                    if (isCharged) {
+                        ctx.fillStyle = '#ffffff';
+                        ctx.font = 'bold 12px Georgia';
+                    } else if (isCharging) {
+                        ctx.fillStyle = '#00ffff';
+                        ctx.font = 'bold 11px Georgia';
+                    } else {
+                        ctx.fillStyle = state === 'active' ? '#fff' : hexToRgba('#fff', 0.4);
+                        ctx.font = state === 'active' ? 'bold 10px Georgia' : '9px Georgia';
+                    }
                     ctx.textAlign = 'center';
                     ctx.textBaseline = 'middle';
-                    const label = spell.charAt(0).toUpperCase();
+                    // Special label for Mana Shards, otherwise first letter
+                    const label = spell === MANA_SHARDS ? '◆' : spell.charAt(0).toUpperCase();
                     ctx.fillText(label, pos.x, pos.y);
                 }
             });
@@ -1132,6 +1498,329 @@
             return colors[spell] || '#666666';
         }
 
+        // Check if a point is over an enemy node (for targeting)
+        function getEnemyNodeAtPosition(x, y) {
+            // Check all enemy nodes (both functional and pathway)
+            for (const nodeName of enemyNodeNames) {
+                const pos = getEnemyNodePosition(nodeName);
+                const radius = getEnemyNodeRadius(nodeName);
+                const dist = Math.sqrt((x - pos.x) ** 2 + (y - pos.y) ** 2);
+                // Slightly larger hit area for easier targeting
+                if (dist <= radius + 5) {
+                    return nodeName;
+                }
+            }
+            return null;
+        }
+
+        // Check if we're in targeting mode (Mana Shards charged)
+        function isInTargetingMode() {
+            return manaShardsState === 'charged';
+        }
+
+        // Draw targeting mode UI indicator
+        function drawTargetingModeUI() {
+            if (!isInTargetingMode()) return;
+
+            // Pulsing "SELECT TARGET" text at top center
+            const pulse = Math.sin(animationTime * 4) * 0.2 + 0.8;
+
+            // Background banner
+            ctx.fillStyle = `rgba(80, 20, 20, ${pulse * 0.8})`;
+            ctx.beginPath();
+            ctx.roundRect(canvas.width / 2 - 120, 70, 240, 35, 6);
+            ctx.fill();
+
+            // Border
+            ctx.strokeStyle = `rgba(255, 100, 100, ${pulse})`;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.roundRect(canvas.width / 2 - 120, 70, 240, 35, 6);
+            ctx.stroke();
+
+            // Text
+            ctx.font = 'bold 18px Georgia';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = `rgba(255, 200, 200, ${pulse})`;
+            ctx.shadowColor = '#ff4444';
+            ctx.shadowBlur = 10;
+            ctx.fillText('⚡ SELECT TARGET ⚡', canvas.width / 2, 88);
+            ctx.shadowBlur = 0;
+
+            // Crosshair icon near enemy node network
+            const cx = enemyNodeNetwork.centerX;
+            const cy = enemyNodeNetwork.centerY - 165;
+            const crossSize = 12 + Math.sin(animationTime * 6) * 2;
+
+            ctx.strokeStyle = `rgba(255, 100, 100, ${pulse})`;
+            ctx.lineWidth = 2;
+            // Horizontal line
+            ctx.beginPath();
+            ctx.moveTo(cx - crossSize, cy);
+            ctx.lineTo(cx + crossSize, cy);
+            ctx.stroke();
+            // Vertical line
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - crossSize);
+            ctx.lineTo(cx, cy + crossSize);
+            ctx.stroke();
+            // Circle
+            ctx.beginPath();
+            ctx.arc(cx, cy, crossSize * 0.7, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+
+        // Fire a Mana Shards projectile at an enemy node
+        function fireManaShardProjectile(targetNodeName) {
+            const startPos = getNodePosition(manaShardsNodeName);
+            const endPos = getEnemyNodePosition(targetNodeName);
+
+            manaShardProjectile = {
+                startX: startPos.x,
+                startY: startPos.y,
+                endX: endPos.x,
+                endY: endPos.y,
+                currentX: startPos.x,
+                currentY: startPos.y,
+                targetNode: targetNodeName,
+                startTime: performance.now(),
+                progress: 0
+            };
+
+            // Reset Mana Shards state immediately after firing
+            manaShardsState = 'idle';
+            manaShardsChargeProgress = 0;
+            hoveredEnemyNode = null;
+            canvas.style.cursor = 'default';
+
+            console.log(`[MANA SHARDS] Projectile fired at: ${targetNodeName}`);
+        }
+
+        // Update and draw the Mana Shards projectile
+        function updateAndDrawManaShardProjectile(timestamp) {
+            if (!manaShardProjectile) return;
+
+            const elapsed = timestamp - manaShardProjectile.startTime;
+            const progress = Math.min(1, elapsed / projectileTravelTime);
+
+            // Easing function for smooth acceleration/deceleration
+            const easeProgress = progress < 0.5
+                ? 2 * progress * progress
+                : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+
+            // Update position
+            manaShardProjectile.currentX = manaShardProjectile.startX +
+                (manaShardProjectile.endX - manaShardProjectile.startX) * easeProgress;
+            manaShardProjectile.currentY = manaShardProjectile.startY +
+                (manaShardProjectile.endY - manaShardProjectile.startY) * easeProgress;
+            manaShardProjectile.progress = progress;
+
+            // Spawn trail particles
+            if (Math.random() < 0.6) {
+                projectileTrailParticles.push({
+                    x: manaShardProjectile.currentX + (Math.random() - 0.5) * 8,
+                    y: manaShardProjectile.currentY + (Math.random() - 0.5) * 8,
+                    vx: (Math.random() - 0.5) * 2,
+                    vy: (Math.random() - 0.5) * 2,
+                    life: 1,
+                    decay: 0.04 + Math.random() * 0.03,
+                    size: 3 + Math.random() * 4
+                });
+            }
+
+            // Draw trail particles
+            ctx.save();
+            for (let i = projectileTrailParticles.length - 1; i >= 0; i--) {
+                const p = projectileTrailParticles[i];
+                p.x += p.vx;
+                p.y += p.vy;
+                p.life -= p.decay;
+
+                if (p.life <= 0) {
+                    projectileTrailParticles.splice(i, 1);
+                    continue;
+                }
+
+                // Cyan/ice blue gradient
+                const alpha = p.life * 0.8;
+                ctx.beginPath();
+                ctx.fillStyle = `rgba(100, 220, 255, ${alpha})`;
+                ctx.shadowColor = '#66ddff';
+                ctx.shadowBlur = 8;
+                ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.shadowBlur = 0;
+            ctx.restore();
+
+            // Draw main projectile
+            const px = manaShardProjectile.currentX;
+            const py = manaShardProjectile.currentY;
+            const pulseSize = 12 + Math.sin(timestamp * 0.02) * 3;
+
+            // Outer glow
+            const glowGradient = ctx.createRadialGradient(px, py, 0, px, py, pulseSize + 15);
+            glowGradient.addColorStop(0, 'rgba(100, 220, 255, 0.8)');
+            glowGradient.addColorStop(0.4, 'rgba(80, 200, 255, 0.4)');
+            glowGradient.addColorStop(0.7, 'rgba(60, 180, 255, 0.15)');
+            glowGradient.addColorStop(1, 'rgba(60, 180, 255, 0)');
+            ctx.fillStyle = glowGradient;
+            ctx.beginPath();
+            ctx.arc(px, py, pulseSize + 15, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Inner core
+            ctx.fillStyle = '#aaeeff';
+            ctx.shadowColor = '#66ddff';
+            ctx.shadowBlur = 20;
+            ctx.beginPath();
+            ctx.arc(px, py, pulseSize * 0.6, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Bright center
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(px, py, pulseSize * 0.25, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+
+            // Check for arrival
+            if (progress >= 1) {
+                createManaShardImpact(manaShardProjectile.endX, manaShardProjectile.endY, manaShardProjectile.targetNode);
+                manaShardProjectile = null;
+            }
+        }
+
+        // Create impact effect when projectile hits
+        function createManaShardImpact(x, y, targetNodeName) {
+            // Create explosion particles (red-tinted for damage)
+            const particleCount = 40;
+            for (let i = 0; i < particleCount; i++) {
+                const angle = (Math.PI * 2 * i) / particleCount + Math.random() * 0.3;
+                const speed = 4 + Math.random() * 8;
+                // Mix of cyan and red particles for damage effect
+                const color = Math.random() > 0.4 ? '#66ddff' : '#ff6666';
+                particles.push({
+                    x: x,
+                    y: y,
+                    vx: Math.cos(angle) * speed,
+                    vy: Math.sin(angle) * speed,
+                    life: 1,
+                    decay: 0.02 + Math.random() * 0.02,
+                    size: 4 + Math.random() * 6,
+                    color: color
+                });
+            }
+
+            // Add some white core particles
+            for (let i = 0; i < 15; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const speed = 2 + Math.random() * 4;
+                particles.push({
+                    x: x,
+                    y: y,
+                    vx: Math.cos(angle) * speed,
+                    vy: Math.sin(angle) * speed,
+                    life: 1,
+                    decay: 0.03 + Math.random() * 0.03,
+                    size: 3 + Math.random() * 3,
+                    color: '#ffffff'
+                });
+            }
+
+            // Create custom impact flash at the hit location
+            manaShardImpactFlash = {
+                x: x,
+                y: y,
+                intensity: 1.0,
+                startTime: performance.now()
+            };
+
+            // === DAMAGE EFFECTS ===
+
+            // Reduce enemy HP by 3
+            enemyHP = Math.max(0, enemyHP - 3);
+            console.log(`[MANA SHARDS] Impact! Enemy HP: ${enemyHP}/${MAX_HP}`);
+
+            // Mark the node as damaged (if not already)
+            if (!enemyNodeDamaged[targetNodeName]) {
+                enemyNodeDamaged[targetNodeName] = true;
+                console.log(`[MANA SHARDS] Node DAMAGED: ${targetNodeName}`);
+
+                // If it's a functional node that was active, recalculate mana
+                // Active node was +1, damaged active node is -1, so net change is -2
+                const nodeInfo = enemyNodeNetwork.nodes[targetNodeName];
+                if (nodeInfo && nodeInfo.type === NODE_TYPE_FUNCTIONAL) {
+                    if (enemyNodeStates[targetNodeName] === 'active') {
+                        enemyActiveMana = enemyActiveMana - 2; // Was +1, now -1
+                        console.log(`[MANA SHARDS] Enemy mana reduced! Now: ${enemyActiveMana}`);
+                    }
+
+                    // Check if enemy's current beam type is still available
+                    // If not, force them to switch to an available beam
+                    if (enemyBeamType && !isEnemyBeamTypeAvailable(enemyBeamType)) {
+                        console.log(`[MANA SHARDS] Enemy beam type ${enemyBeamType} no longer available! Forcing switch.`);
+                        enemyBeamType = pickStrategicBeam();
+                        enemyBeamSwitchTime = performance.now() + 500;
+                    }
+                }
+            }
+        }
+
+        // Update and draw the Mana Shard impact flash
+        function updateAndDrawManaShardImpactFlash() {
+            if (!manaShardImpactFlash) return;
+
+            // Fade out over 300ms
+            const elapsed = performance.now() - manaShardImpactFlash.startTime;
+            const duration = 300;
+            manaShardImpactFlash.intensity = Math.max(0, 1 - elapsed / duration);
+
+            if (manaShardImpactFlash.intensity <= 0) {
+                manaShardImpactFlash = null;
+                return;
+            }
+
+            const x = manaShardImpactFlash.x;
+            const y = manaShardImpactFlash.y;
+            const intensity = manaShardImpactFlash.intensity;
+
+            ctx.save();
+
+            // Expanding ring
+            const ringSize = 60 * (1 - intensity) + 20;
+            ctx.strokeStyle = `rgba(100, 220, 255, ${intensity * 0.8})`;
+            ctx.lineWidth = 4 * intensity;
+            ctx.shadowColor = '#66ddff';
+            ctx.shadowBlur = 20;
+            ctx.beginPath();
+            ctx.arc(x, y, ringSize, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // Second ring
+            const ring2Size = 40 * (1 - intensity) + 10;
+            ctx.strokeStyle = `rgba(200, 240, 255, ${intensity * 0.6})`;
+            ctx.lineWidth = 3 * intensity;
+            ctx.beginPath();
+            ctx.arc(x, y, ring2Size, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // Central flash
+            const flashGradient = ctx.createRadialGradient(x, y, 0, x, y, 40 * intensity);
+            flashGradient.addColorStop(0, `rgba(255, 255, 255, ${intensity * 0.9})`);
+            flashGradient.addColorStop(0.3, `rgba(150, 230, 255, ${intensity * 0.6})`);
+            flashGradient.addColorStop(0.7, `rgba(80, 200, 255, ${intensity * 0.2})`);
+            flashGradient.addColorStop(1, 'rgba(60, 180, 255, 0)');
+            ctx.fillStyle = flashGradient;
+            ctx.beginPath();
+            ctx.arc(x, y, 40 * intensity, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.shadowBlur = 0;
+            ctx.restore();
+        }
+
         // Draw the enemy node network (display only - mirrored on right side)
         function drawEnemyNodeNetwork() {
             // Position below enemy wizard (right side)
@@ -1180,29 +1869,120 @@
             enemyPathwayNodeNames.forEach(nodeName => {
                 const pos = getEnemyNodePosition(nodeName);
                 const radius = getEnemyNodeRadius(nodeName);
+                const isHovered = isInTargetingMode() && hoveredEnemyNode === nodeName;
+                const isTargetable = isInTargetingMode();
+                const isDamaged = enemyNodeDamaged[nodeName];
+                const isRepairing = enemyNodeRepairing[nodeName];
+                const repairProg = enemyNodeRepairProgress[nodeName] || 0;
 
-                // Simple grey dot
-                ctx.fillStyle = 'rgba(100, 80, 100, 0.8)';
+                // Targeting highlight - outer glow when hovered
+                if (isHovered) {
+                    ctx.fillStyle = 'rgba(255, 100, 100, 0.4)';
+                    ctx.shadowColor = '#ff4444';
+                    ctx.shadowBlur = 20;
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, radius + 8, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.shadowBlur = 0;
+                }
+
+                // Damaged nodes: dark red/maroon color (or blue if repairing)
+                // Normal nodes: grey (brighter when targetable)
+                if (isRepairing) {
+                    ctx.fillStyle = 'rgba(60, 80, 100, 0.9)';
+                } else if (isDamaged) {
+                    ctx.fillStyle = 'rgba(80, 30, 30, 0.9)';
+                } else {
+                    ctx.fillStyle = isTargetable ? 'rgba(140, 120, 140, 0.9)' : 'rgba(100, 80, 100, 0.8)';
+                }
                 ctx.beginPath();
                 ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
                 ctx.fill();
 
-                // Subtle outline
-                ctx.strokeStyle = 'rgba(140, 120, 140, 0.6)';
-                ctx.lineWidth = 1;
+                // Outline - red pulsing when hovered, brighter when targetable
+                if (isHovered) {
+                    const pulse = Math.sin(animationTime * 8) * 0.3 + 0.7;
+                    ctx.strokeStyle = `rgba(255, 100, 100, ${pulse})`;
+                    ctx.lineWidth = 3;
+                } else if (isRepairing) {
+                    ctx.strokeStyle = 'rgba(100, 150, 200, 0.8)';
+                    ctx.lineWidth = 2;
+                } else if (isDamaged) {
+                    ctx.strokeStyle = 'rgba(180, 50, 50, 0.8)';
+                    ctx.lineWidth = 2;
+                } else if (isTargetable) {
+                    ctx.strokeStyle = 'rgba(255, 150, 150, 0.6)';
+                    ctx.lineWidth = 2;
+                } else {
+                    ctx.strokeStyle = 'rgba(140, 120, 140, 0.6)';
+                    ctx.lineWidth = 1;
+                }
                 ctx.beginPath();
                 ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
                 ctx.stroke();
+
+                // Draw X overlay for damaged pathway nodes (not when repairing)
+                if (isDamaged && !isRepairing) {
+                    ctx.strokeStyle = 'rgba(255, 80, 80, 0.8)';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(pos.x - radius * 0.6, pos.y - radius * 0.6);
+                    ctx.lineTo(pos.x + radius * 0.6, pos.y + radius * 0.6);
+                    ctx.moveTo(pos.x + radius * 0.6, pos.y - radius * 0.6);
+                    ctx.lineTo(pos.x - radius * 0.6, pos.y + radius * 0.6);
+                    ctx.stroke();
+                }
+
+                // Repair progress for pathway nodes
+                if (isRepairing) {
+                    const progressRadius = radius + 3;
+                    const startAngle = -Math.PI / 2;
+                    const endAngle = startAngle + (repairProg * Math.PI * 2);
+
+                    ctx.strokeStyle = '#66aaff';
+                    ctx.lineWidth = 2;
+                    ctx.lineCap = 'round';
+                    ctx.shadowColor = '#66aaff';
+                    ctx.shadowBlur = 6;
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, progressRadius, startAngle, endAngle);
+                    ctx.stroke();
+                    ctx.shadowBlur = 0;
+                    ctx.lineCap = 'butt';
+                }
             });
 
             // Draw functional nodes (larger, colored) - with all states
             enemyFunctionalNodeNames.forEach(nodeName => {
                 const pos = getEnemyNodePosition(nodeName);
                 const radius = getEnemyNodeRadius(nodeName);
-                const color = getEnemyNodeColor(nodeName);
+                let color = getEnemyNodeColor(nodeName);
                 const spell = enemyNodeNetwork.spellAssignments[nodeName];
                 const state = enemyNodeStates[nodeName] || 'dormant';
                 const activationProg = enemyNodeActivationProgress[nodeName] || 0;
+                const isHovered = isInTargetingMode() && hoveredEnemyNode === nodeName;
+                const isTargetable = isInTargetingMode();
+                const isDamaged = enemyNodeDamaged[nodeName];
+                const isRepairing = enemyNodeRepairing[nodeName];
+                const repairProg = enemyNodeRepairProgress[nodeName] || 0;
+
+                // Damaged nodes use a dark red color instead of their normal color
+                if (isDamaged && !isRepairing) {
+                    color = '#882222';
+                } else if (isRepairing) {
+                    color = '#446688'; // Blue-ish for repair
+                }
+
+                // Targeting highlight - outer glow when hovered (draw first, behind node)
+                if (isHovered) {
+                    ctx.fillStyle = 'rgba(255, 100, 100, 0.3)';
+                    ctx.shadowColor = '#ff4444';
+                    ctx.shadowBlur = 25;
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, radius + 12, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.shadowBlur = 0;
+                }
 
                 if (state === 'dormant') {
                     // DORMANT: dim, outline only
@@ -1286,14 +2066,119 @@
                     ctx.fill();
                 }
 
-                // Label for spell type
-                if (spell && spell !== 'dud') {
+                // Label for spell type (hidden if damaged)
+                if (spell && spell !== 'dud' && !isDamaged) {
                     ctx.fillStyle = state === 'active' ? '#fff' : hexToRgba('#fff', 0.4);
                     ctx.font = state === 'active' ? 'bold 10px Georgia' : '9px Georgia';
                     ctx.textAlign = 'center';
                     ctx.textBaseline = 'middle';
-                    const label = spell.charAt(0).toUpperCase();
+                    // Special label for Mana Shards, otherwise first letter
+                    const label = spell === MANA_SHARDS ? '◆' : spell.charAt(0).toUpperCase();
                     ctx.fillText(label, pos.x, pos.y);
+                }
+
+                // DAMAGE OVERLAY for damaged functional nodes
+                if (isDamaged) {
+                    if (isRepairing) {
+                        // REPAIRING: show repair progress with blue/white theme
+                        // Darker overlay during repair
+                        ctx.fillStyle = 'rgba(40, 60, 80, 0.6)';
+                        ctx.beginPath();
+                        ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+                        ctx.fill();
+
+                        // Repair progress bar (blue/cyan)
+                        const progressRadius = radius + 5;
+                        const startAngle = -Math.PI / 2;
+                        const endAngle = startAngle + (repairProg * Math.PI * 2);
+
+                        // Background ring
+                        ctx.strokeStyle = 'rgba(100, 150, 200, 0.3)';
+                        ctx.lineWidth = 4;
+                        ctx.beginPath();
+                        ctx.arc(pos.x, pos.y, progressRadius, 0, Math.PI * 2);
+                        ctx.stroke();
+
+                        // Progress ring (blue/cyan)
+                        ctx.strokeStyle = '#66aaff';
+                        ctx.lineWidth = 4;
+                        ctx.lineCap = 'round';
+                        ctx.shadowColor = '#66aaff';
+                        ctx.shadowBlur = 10;
+                        ctx.beginPath();
+                        ctx.arc(pos.x, pos.y, progressRadius, startAngle, endAngle);
+                        ctx.stroke();
+                        ctx.shadowBlur = 0;
+                        ctx.lineCap = 'butt';
+
+                        // Wrench/repair icon (simple representation)
+                        ctx.fillStyle = 'rgba(150, 200, 255, 0.9)';
+                        ctx.font = 'bold 12px Georgia';
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillText('⚡', pos.x, pos.y); // Using lightning as "repair" icon
+                    } else {
+                        // NOT REPAIRING: show damage overlay
+                        // Dark red overlay
+                        ctx.fillStyle = 'rgba(100, 20, 20, 0.5)';
+                        ctx.beginPath();
+                        ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+                        ctx.fill();
+
+                        // Red X mark
+                        ctx.strokeStyle = 'rgba(255, 80, 80, 0.9)';
+                        ctx.lineWidth = 3;
+                        ctx.lineCap = 'round';
+                        ctx.beginPath();
+                        ctx.moveTo(pos.x - radius * 0.5, pos.y - radius * 0.5);
+                        ctx.lineTo(pos.x + radius * 0.5, pos.y + radius * 0.5);
+                        ctx.moveTo(pos.x + radius * 0.5, pos.y - radius * 0.5);
+                        ctx.lineTo(pos.x - radius * 0.5, pos.y + radius * 0.5);
+                        ctx.stroke();
+                        ctx.lineCap = 'butt';
+
+                        // Crack lines emanating from center
+                        ctx.strokeStyle = 'rgba(60, 20, 20, 0.8)';
+                        ctx.lineWidth = 1;
+                        const crackAngles = [0.3, 1.2, 2.5, 3.8, 5.1];
+                        crackAngles.forEach(angle => {
+                            ctx.beginPath();
+                            ctx.moveTo(pos.x, pos.y);
+                            const len = radius * (0.6 + Math.random() * 0.4);
+                            ctx.lineTo(pos.x + Math.cos(angle) * len, pos.y + Math.sin(angle) * len);
+                            ctx.stroke();
+                        });
+
+                        // "-1" mana indicator for active damaged nodes
+                        if (state === 'active') {
+                            ctx.fillStyle = '#ff4444';
+                            ctx.font = 'bold 10px Georgia';
+                            ctx.textAlign = 'center';
+                            ctx.textBaseline = 'middle';
+                            ctx.fillText('-1', pos.x, pos.y + radius + 12);
+                        }
+                    }
+                }
+
+                // Targeting overlay ring (drawn on top)
+                if (isHovered) {
+                    // Pulsing red targeting ring
+                    const pulse = Math.sin(animationTime * 8) * 0.3 + 0.7;
+                    ctx.strokeStyle = `rgba(255, 80, 80, ${pulse})`;
+                    ctx.lineWidth = 4;
+                    ctx.shadowColor = '#ff4444';
+                    ctx.shadowBlur = 15;
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, radius + 4, 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.shadowBlur = 0;
+                } else if (isTargetable) {
+                    // Subtle red tint to show all nodes are targetable
+                    ctx.strokeStyle = 'rgba(255, 120, 120, 0.5)';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, radius + 3, 0, Math.PI * 2);
+                    ctx.stroke();
                 }
             });
 
@@ -1342,18 +2227,26 @@
         }
 
         // Spell types
-        const NEUTRAL = 'neutral';
+        const SUPPRESS = 'suppress';
         const SPIRAL = 'spiral';
         const PULSE = 'pulse';
         const ZAP = 'zap';
+        const MANA_SHARDS = 'mana_shards';
 
         // Colors
         const colors = {
-            neutral: '#95a5a6',
+            suppress: '#95a5a6',
             spiral: '#9b59b6',
             pulse: '#e74c3c',
-            zap: '#f1c40f'
+            zap: '#f1c40f',
+            mana_shards: '#00d4ff'  // Cyan/ice blue
         };
+
+        // Stability system
+        let playerStability = 100;
+        let enemyStability = 100;
+        const STABILITY_DRAIN_RATE = 25;  // % per second while on Suppress (4 seconds to drain)
+        const STABILITY_REGEN_RATE = 25;  // % per second while on attack beam (4 seconds to regen)
 
         function resizeCanvas() {
             canvas.width = window.innerWidth;
@@ -1457,26 +2350,36 @@
 
         function restartGame() {
             ballPosition = 50;
-            playerChoice = NEUTRAL;
+            // playerChoice will be set by initBoostAndCooldowns() to center's beam type
             gameActive = true;
             lastClashTime = performance.now();
             gameOverScreen.style.display = 'none';
             enemyCurrentBeam = null;
             enemyClashesRemaining = 0;
-            pickNewEnemyBeam();
+            // Enemy AI state reset in initBoostAndCooldowns()
             particles = [];
+            projectileTrailParticles = [];
             clashFlashIntensity = 0;
+            manaShardProjectile = null;
+            manaShardImpactFlash = null;
+            // Reset HP
+            playerHP = MAX_HP;
+            enemyHP = MAX_HP;
+            // Reset Stability
+            playerStability = 100;
+            enemyStability = 100;
+            lastStabilityUpdate = 0;
             initStickFigureNodes();
             initEnemyNodeNetwork();
             initNodeStates();
             initStickAwareness();
             initEnemyAwareness();
-            initBoostAndCooldowns();
+            initBoostAndCooldowns();  // This calls switchEnemyBeam() which respects node activation
             updateButtonStates();
         }
 
         function updateButtonStates() {
-            neutralBtn.style.outline = playerChoice === NEUTRAL ? '4px solid white' : 'none';
+            suppressBtn.style.outline = playerChoice === SUPPRESS ? '4px solid white' : 'none';
             spiralBtn.style.outline = playerChoice === SPIRAL ? '4px solid white' : 'none';
             pulseBtn.style.outline = playerChoice === PULSE ? '4px solid white' : 'none';
             zapBtn.style.outline = playerChoice === ZAP ? '4px solid white' : 'none';
@@ -1494,11 +2397,11 @@
             const now = performance.now();
 
             // Special rule: Switching TO Neutral has NO cooldown (can always bail to safety)
-            if (spell === NEUTRAL) {
-                playerBeamType = NEUTRAL;
-                playerChoice = NEUTRAL;
-                // Clear all cooldowns when going to neutral
-                cooldowns.neutral = 0;
+            if (spell === SUPPRESS) {
+                playerBeamType = SUPPRESS;
+                playerChoice = SUPPRESS;
+                // Clear all cooldowns when going to suppress
+                cooldowns.suppress = 0;
                 cooldowns.spiral = 0;
                 cooldowns.pulse = 0;
                 cooldowns.zap = 0;
@@ -1519,7 +2422,7 @@
 
             // Put ALL attack buttons on cooldown (committed for 5 seconds)
             // Neutral never has cooldown
-            cooldowns.neutral = 0;
+            cooldowns.suppress = 0;
             cooldowns.spiral = now + cooldownDuration;
             cooldowns.pulse = now + cooldownDuration;
             cooldowns.zap = now + cooldownDuration;
@@ -1535,6 +2438,11 @@
             // Apply debuff if enemy is countering us
             const debuff = getPlayerManaDebuff();
             effective -= debuff;
+
+            // Apply Mana Shards charging penalty (-1 mana while charging or charged)
+            if (isManaShardsDrawingMana()) {
+                effective -= 1;
+            }
 
             // Floor at 0 (can't have negative effective mana)
             return Math.max(0, effective);
@@ -1553,7 +2461,7 @@
 
         // Check if a beam type has at least one active functional node
         function isBeamTypeUnlocked(beamType) {
-            if (beamType === NEUTRAL) return true; // Neutral always unlocked
+            if (beamType === SUPPRESS) return true; // Neutral always unlocked
 
             for (const nodeName of functionalNodeNames) {
                 const spell = nodeNetwork.spellAssignments[nodeName];
@@ -1623,45 +2531,239 @@
             });
 
             // Neutral button is ALWAYS available (no cooldown to switch to it)
-            const neutralActive = playerBeamType === NEUTRAL;
-            neutralBtn.disabled = false;
-            neutralBtn.textContent = 'NEUTRAL';
-            neutralBtn.style.opacity = '1';
-            neutralBtn.style.filter = 'none';
-            neutralBtn.style.outline = neutralActive ? '3px solid white' : 'none';
-            neutralBtn.title = '';
+            const suppressActive = playerBeamType === SUPPRESS;
+            suppressBtn.disabled = false;
+            suppressBtn.textContent = 'SUPPRESS';
+            suppressBtn.style.opacity = '1';
+            suppressBtn.style.filter = 'none';
+            suppressBtn.style.outline = suppressActive ? '3px solid white' : 'none';
+            suppressBtn.title = '';
         }
 
         function initBoostAndCooldowns() {
-            // Start in NEUTRAL - safe, no modifier
-            playerBeamType = NEUTRAL;
-            playerChoice = NEUTRAL;
-            cooldowns = { neutral: 0, spiral: 0, pulse: 0, zap: 0 };
-            // Initialize enemy with a random beam
-            switchEnemyBeam();
+            // Start with center node's beam type (center is always active at game start)
+            const centerBeamType = nodeNetwork.spellAssignments['center'];
+            playerBeamType = centerBeamType;
+            playerChoice = centerBeamType;
+            cooldowns = { suppress: 0, spiral: 0, pulse: 0, zap: 0 };
+
+            // Enemy starts with their center node's beam type
+            const enemyCenterBeamType = enemyNodeNetwork.spellAssignments['center'];
+            enemyBeamType = enemyCenterBeamType;
+            enemyLastPlayerBeam = playerBeamType;  // Initialize AI tracking
+            enemySuppressStartTime = 0;
+            enemyBeamSwitchTime = performance.now() + 500;  // Start AI decisions quickly
+            console.log('[ENEMY AI] Starting with center beam:', enemyBeamType);
+
             updateCooldownDisplay();
         }
 
-        function switchEnemyBeam() {
-            // Enemy can use all beam types including neutral
-            const beams = [NEUTRAL, SPIRAL, PULSE, ZAP];
-            // Pick a different beam than current
-            let newBeam;
-            do {
-                newBeam = beams[Math.floor(Math.random() * beams.length)];
-            } while (newBeam === enemyBeamType && enemyBeamType !== null);
+        // Check if enemy has at least one active, non-damaged node for a beam type
+        function isEnemyBeamTypeAvailable(beamType) {
+            if (beamType === SUPPRESS) return true; // Neutral always available
 
-            enemyBeamType = newBeam;
-            enemyBeamSwitchTime = performance.now() + 4000 + Math.random() * 4000; // 4-8 seconds
+            for (const nodeName of enemyFunctionalNodeNames) {
+                const spell = enemyNodeNetwork.spellAssignments[nodeName];
+                const state = enemyNodeStates[nodeName];
+                const isDamaged = enemyNodeDamaged[nodeName];
+                // Must be active AND not damaged
+                if (spell === beamType && state === 'active' && !isDamaged) {
+                    return true;
+                }
+            }
+            return false;
         }
 
+        // Get the beam type that counters a given beam
+        function getCounterBeam(beamType) {
+            // PULSE beats SPIRAL, ZAP beats PULSE, SPIRAL beats ZAP
+            if (beamType === SPIRAL) return PULSE;
+            if (beamType === PULSE) return ZAP;
+            if (beamType === ZAP) return SPIRAL;
+            return null; // SUPPRESS has no counter
+        }
+
+        // Check if enemy is currently being countered by player
+        function isEnemyBeingCountered() {
+            if (!playerBeamType || !enemyBeamType) return false;
+            if (playerBeamType === SUPPRESS || enemyBeamType === SUPPRESS) return false;
+            return getCounterResult(playerBeamType, enemyBeamType) === 1;
+        }
+
+        // Strategic AI: pick optimal beam type
+        function pickStrategicBeam() {
+            const availableAttackBeams = [SPIRAL, PULSE, ZAP].filter(beam => isEnemyBeamTypeAvailable(beam));
+
+            // If player is on Suppress, just use any available attack beam
+            if (playerBeamType === SUPPRESS) {
+                if (availableAttackBeams.length > 0) {
+                    return availableAttackBeams[Math.floor(Math.random() * availableAttackBeams.length)];
+                }
+                return SUPPRESS;
+            }
+
+            // PRIMARY: Try to counter the player's beam
+            const counterBeam = getCounterBeam(playerBeamType);
+            if (counterBeam && isEnemyBeamTypeAvailable(counterBeam)) {
+                console.log(`[ENEMY AI] Countering player's ${playerBeamType} with ${counterBeam}`);
+                return counterBeam;
+            }
+
+            // FALLBACK: Pick any available attack beam that isn't countered by player
+            const playerCounter = getCounterBeam(playerBeamType); // What player would counter
+            const safeBeams = availableAttackBeams.filter(beam => {
+                // Avoid beams that player counters
+                return getCounterResult(playerBeamType, beam) !== 1;
+            });
+
+            if (safeBeams.length > 0) {
+                const pick = safeBeams[Math.floor(Math.random() * safeBeams.length)];
+                console.log(`[ENEMY AI] No counter available, picking safe beam: ${pick}`);
+                return pick;
+            }
+
+            // Last resort: any available attack beam
+            if (availableAttackBeams.length > 0) {
+                const pick = availableAttackBeams[Math.floor(Math.random() * availableAttackBeams.length)];
+                console.log(`[ENEMY AI] No safe beams, picking: ${pick}`);
+                return pick;
+            }
+
+            // No attack beams available at all
+            console.log('[ENEMY AI] No attack beams available, using SUPPRESS');
+            return SUPPRESS;
+        }
+
+        // Enemy AI decision timing
+        const ENEMY_REACT_TIME = 300;        // React to player changes after 300ms
+        const ENEMY_SUPPRESS_DURATION = 1200; // Stay on Suppress for 1-1.5 seconds
+        let enemyLastPlayerBeam = null;
+        let enemySuppressStartTime = 0;
+
         function updateEnemyBeam(timestamp) {
+            // Check if enemy is being countered - might need to retreat to Suppress
+            if (isEnemyBeingCountered() && enemyBeamType !== SUPPRESS) {
+                // Switch to Suppress to escape counter
+                console.log(`[ENEMY AI] Being countered! Retreating to SUPPRESS`);
+                enemyBeamType = SUPPRESS;
+                enemySuppressStartTime = timestamp;
+                enemyBeamSwitchTime = timestamp + ENEMY_SUPPRESS_DURATION + Math.random() * 300;
+                return;
+            }
+
+            // If on Suppress, check if we should switch back to attack
+            if (enemyBeamType === SUPPRESS) {
+                if (timestamp >= enemyBeamSwitchTime) {
+                    const newBeam = pickStrategicBeam();
+                    if (newBeam !== SUPPRESS) {
+                        enemyBeamType = newBeam;
+                        console.log(`[ENEMY AI] Leaving SUPPRESS, switching to ${newBeam}`);
+                    }
+                    enemyBeamSwitchTime = timestamp + ENEMY_REACT_TIME;
+                }
+                return;
+            }
+
+            // Detect if player changed beam type - react after short delay
+            if (playerBeamType !== enemyLastPlayerBeam) {
+                enemyLastPlayerBeam = playerBeamType;
+                enemyBeamSwitchTime = timestamp + ENEMY_REACT_TIME;
+                return;
+            }
+
+            // Time to make a decision
             if (timestamp >= enemyBeamSwitchTime) {
-                switchEnemyBeam();
+                const optimalBeam = pickStrategicBeam();
+
+                // Only switch if it's better than current
+                if (optimalBeam !== enemyBeamType && optimalBeam !== SUPPRESS) {
+                    enemyBeamType = optimalBeam;
+                    console.log(`[ENEMY AI] Switching to optimal beam: ${optimalBeam}`);
+                }
+
+                // Check again after a short delay
+                enemyBeamSwitchTime = timestamp + 500 + Math.random() * 500;
             }
         }
 
-        neutralBtn.addEventListener('click', () => activateBoost(NEUTRAL));
+        // Stability system - drain while on Suppress, regen while on attack beam
+        let lastStabilityUpdate = 0;
+
+        function updateStability(timestamp) {
+            if (!gameActive) return;
+
+            // Calculate delta time
+            if (lastStabilityUpdate === 0) {
+                lastStabilityUpdate = timestamp;
+                return;
+            }
+            const deltaTime = (timestamp - lastStabilityUpdate) / 1000;
+            lastStabilityUpdate = timestamp;
+
+            // Player stability
+            if (playerBeamType === SUPPRESS) {
+                // Drain: 0% in 2 seconds = 50% per second
+                playerStability -= STABILITY_DRAIN_RATE * deltaTime;
+                if (playerStability <= 0) {
+                    playerStability = 0;
+                    triggerStabilityPunishment(true);
+                }
+            } else {
+                // Regen: 100% in 4 seconds = 25% per second
+                playerStability = Math.min(100, playerStability + STABILITY_REGEN_RATE * deltaTime);
+            }
+
+            // Enemy stability
+            if (enemyBeamType === SUPPRESS) {
+                enemyStability -= STABILITY_DRAIN_RATE * deltaTime;
+                if (enemyStability <= 0) {
+                    enemyStability = 0;
+                    triggerStabilityPunishment(false);
+                }
+            } else {
+                enemyStability = Math.min(100, enemyStability + STABILITY_REGEN_RATE * deltaTime);
+            }
+        }
+
+        function triggerStabilityPunishment(isPlayer) {
+            const nodeNames = isPlayer ? functionalNodeNames : enemyFunctionalNodeNames;
+            const damagedMap = isPlayer ? nodeDamaged : enemyNodeDamaged;
+
+            // Find all undamaged functional nodes
+            const undamagedNodes = nodeNames.filter(name => !damagedMap[name]);
+
+            if (undamagedNodes.length > 0) {
+                // Pick a random undamaged node to damage
+                const victimNode = undamagedNodes[Math.floor(Math.random() * undamagedNodes.length)];
+                damagedMap[victimNode] = true;
+
+                // If player, also update node state and mana
+                if (isPlayer) {
+                    if (nodeStates[victimNode] === 'active') {
+                        playerActiveMana = Math.max(0, playerActiveMana - 1);
+                    }
+                    nodeStates[victimNode] = 'dormant';
+                    nodeActivationProgress[victimNode] = 0;
+                } else {
+                    if (enemyNodeStates[victimNode] === 'active') {
+                        enemyActiveMana = Math.max(0, enemyActiveMana - 1);
+                    }
+                    enemyNodeStates[victimNode] = 'dormant';
+                    enemyNodeActivationProgress[victimNode] = 0;
+                }
+
+                console.log(`[STABILITY] ${isPlayer ? 'Player' : 'Enemy'} punished - damaged node: ${victimNode}`);
+            }
+
+            // Reset stability to 100% after punishment
+            if (isPlayer) {
+                playerStability = 100;
+            } else {
+                enemyStability = 100;
+            }
+        }
+
+        suppressBtn.addEventListener('click', () => activateBoost(SUPPRESS));
         spiralBtn.addEventListener('click', () => activateBoost(SPIRAL));
         pulseBtn.addEventListener('click', () => activateBoost(PULSE));
         zapBtn.addEventListener('click', () => activateBoost(ZAP));
@@ -2161,7 +3263,7 @@
             ctx.restore();
         }
 
-        // NEUTRAL BEAM - simple, no special effects
+        // SUPPRESS BEAM - simple, no special effects
         function drawNeutralBeam(startX, endX, y, color, isPlayer, thickness = 12) {
             const progress = getClashProgress();
             const length = Math.abs(endX - startX);
@@ -2222,7 +3324,7 @@
 
         function drawBeamByType(beamType, startX, endX, y, color, isPlayer, thickness = 12) {
             switch (beamType) {
-                case NEUTRAL:
+                case SUPPRESS:
                     drawNeutralBeam(startX, endX, y, color, isPlayer, thickness);
                     break;
                 case SPIRAL:
@@ -2472,13 +3574,24 @@
                 ctx.fillText('Beam: NONE', 32, 118);
             }
 
-            // Player mana with debuff if being countered
+            // Player mana with debuff if being countered or charging Mana Shards
             ctx.font = 'bold 14px Georgia';
             let manaText = `Mana: ${playerActiveMana}`;
             let manaColor = '#3498db';
-            if (playerDebuff > 0) {
+            const isChargingShards = isManaShardsDrawingMana();
+
+            if (playerDebuff > 0 && isChargingShards) {
+                // Both countered AND charging shards
+                manaText += ` -${playerDebuff} -1 = ${effectiveMana}`;
+                manaColor = '#e74c3c';
+            } else if (playerDebuff > 0) {
+                // Just countered
                 manaText += ` -${playerDebuff} = ${effectiveMana}`;
                 manaColor = '#e74c3c';
+            } else if (isChargingShards) {
+                // Just charging shards
+                manaText += ` -1 = ${effectiveMana}`;
+                manaColor = '#66aaff'; // Cyan/blue for charging
             }
             ctx.fillStyle = manaColor;
             ctx.shadowColor = manaColor;
@@ -2496,9 +3609,13 @@
                 const debuffText = playerDebuff === 6 ? '-6 (MAX!)' : '-3';
                 ctx.fillStyle = '#e74c3c';
                 ctx.fillText(`COUNTERED! (You ${debuffText})`, 32, 155);
+            } else if (isChargingShards) {
+                ctx.fillStyle = '#66aaff';
+                const state = manaShardsState === 'charged' ? 'READY!' : 'CHARGING...';
+                ctx.fillText(`⚡ MANA SHARDS ${state} (-1)`, 32, 155);
             } else if (playerBeamType && enemyBeamType) {
                 ctx.fillStyle = '#f1c40f';
-                ctx.fillText('NEUTRAL MATCHUP', 32, 155);
+                ctx.fillText('EVEN MATCHUP', 32, 155);
             }
 
             // Enemy active mana (right side)
@@ -2549,7 +3666,7 @@
             ctx.fillStyle = '#888';
             if (enemyBeamType) {
                 let counter = '';
-                if (enemyBeamType === NEUTRAL) counter = 'N/A (Neutral)';
+                if (enemyBeamType === SUPPRESS) counter = 'N/A (Suppress)';
                 else if (enemyBeamType === SPIRAL) counter = 'PULSE';
                 else if (enemyBeamType === PULSE) counter = 'ZAP';
                 else if (enemyBeamType === ZAP) counter = 'SPIRAL';
@@ -2569,6 +3686,130 @@
             ctx.fillText(`Visual: ${visualBeam} | Calc: ${calcBeam} | ${syncStatus}`, canvas.width / 2, canvas.height - 6);
         }
 
+        function drawHP() {
+            const pipWidth = 10;
+            const pipHeight = 8;
+            const pipGap = 2;
+            const pipsPerRow = 15;
+            const rowGap = 3;
+
+            // Calculate pip color based on HP percentage
+            function getPipColor(currentHP, maxHP) {
+                const percent = currentHP / maxHP;
+                if (percent > 0.5) return '#2ecc71';      // Green - healthy
+                if (percent > 0.33) return '#f1c40f';     // Yellow - wounded
+                return '#e74c3c';                          // Red - critical
+            }
+
+            // Draw HP pips for a wizard
+            function drawHPPips(x, y, currentHP, maxHP, alignRight = false) {
+                const totalWidth = pipsPerRow * (pipWidth + pipGap) - pipGap;
+                const startX = alignRight ? x - totalWidth : x;
+                const pipColor = getPipColor(currentHP, maxHP);
+
+                for (let i = 0; i < maxHP; i++) {
+                    const row = Math.floor(i / pipsPerRow);
+                    const col = i % pipsPerRow;
+                    const pipX = startX + col * (pipWidth + pipGap);
+                    const pipY = y + row * (pipHeight + rowGap);
+
+                    // Draw pip background (empty/lost HP)
+                    ctx.fillStyle = 'rgba(40, 40, 60, 0.8)';
+                    ctx.fillRect(pipX, pipY, pipWidth, pipHeight);
+
+                    // Draw pip border
+                    ctx.strokeStyle = 'rgba(80, 80, 100, 0.6)';
+                    ctx.lineWidth = 1;
+                    ctx.strokeRect(pipX, pipY, pipWidth, pipHeight);
+
+                    // Draw filled pip if HP remains
+                    if (i < currentHP) {
+                        ctx.fillStyle = pipColor;
+                        ctx.shadowColor = pipColor;
+                        ctx.shadowBlur = 4;
+                        ctx.fillRect(pipX + 1, pipY + 1, pipWidth - 2, pipHeight - 2);
+                        ctx.shadowBlur = 0;
+                    }
+                }
+            }
+
+            // Player HP (left side, below mana box)
+            ctx.font = 'bold 12px Georgia';
+            ctx.textAlign = 'left';
+            ctx.fillStyle = '#aaa';
+            ctx.fillText('HP:', 20, 185);
+            drawHPPips(45, 175, playerHP, MAX_HP, false);
+
+            // Enemy HP (right side, below mana box)
+            ctx.textAlign = 'right';
+            ctx.fillStyle = '#aaa';
+            ctx.fillText('HP:', canvas.width - 185, 185);
+            drawHPPips(canvas.width - 20, 175, enemyHP, MAX_HP, true);
+        }
+
+        function drawStability() {
+            const barWidth = 150;
+            const barHeight = 12;
+            const yPos = 205;
+
+            // Get stability bar color based on value
+            function getStabilityColor(stability) {
+                if (stability > 50) return '#2ecc71';      // Green - stable
+                if (stability > 25) return '#f1c40f';      // Yellow - warning
+                return '#e74c3c';                           // Red - critical
+            }
+
+            // Draw a stability bar
+            function drawStabilityBar(x, stability, alignRight = false) {
+                const startX = alignRight ? x - barWidth : x;
+                const fillWidth = (stability / 100) * barWidth;
+                const barColor = getStabilityColor(stability);
+
+                // Bar background
+                ctx.fillStyle = 'rgba(40, 40, 60, 0.8)';
+                ctx.fillRect(startX, yPos, barWidth, barHeight);
+
+                // Bar border
+                ctx.strokeStyle = 'rgba(80, 80, 100, 0.6)';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(startX, yPos, barWidth, barHeight);
+
+                // Filled portion
+                if (stability > 0) {
+                    ctx.fillStyle = barColor;
+                    ctx.shadowColor = barColor;
+                    ctx.shadowBlur = 4;
+                    ctx.fillRect(startX + 1, yPos + 1, Math.max(0, fillWidth - 2), barHeight - 2);
+                    ctx.shadowBlur = 0;
+                }
+            }
+
+            // Player stability (left side)
+            ctx.font = 'bold 12px Georgia';
+            ctx.textAlign = 'left';
+            ctx.fillStyle = '#aaa';
+            ctx.fillText('STABILITY:', 20, yPos + 10);
+            drawStabilityBar(95, playerStability, false);
+
+            // Percentage text
+            ctx.font = '10px Georgia';
+            ctx.fillStyle = getStabilityColor(playerStability);
+            ctx.fillText(`${Math.round(playerStability)}%`, 95 + barWidth + 5, yPos + 10);
+
+            // Enemy stability (right side)
+            ctx.font = 'bold 12px Georgia';
+            ctx.textAlign = 'right';
+            ctx.fillStyle = '#aaa';
+            ctx.fillText('STABILITY:', canvas.width - 95 - barWidth - 5, yPos + 10);
+            drawStabilityBar(canvas.width - 95, enemyStability, true);
+
+            // Enemy percentage text
+            ctx.font = '10px Georgia';
+            ctx.fillStyle = getStabilityColor(enemyStability);
+            ctx.textAlign = 'left';
+            ctx.fillText(`${Math.round(enemyStability)}%`, canvas.width - 95 + 5, yPos + 10);
+        }
+
         canvas.addEventListener('click', (e) => {
             if (!gameActive) return;
 
@@ -2576,10 +3817,58 @@
             const clickX = e.clientX - rect.left;
             const clickY = e.clientY - rect.top;
 
+            // Check if in targeting mode and clicking on enemy node
+            if (isInTargetingMode()) {
+                const targetedNode = getEnemyNodeAtPosition(clickX, clickY);
+                if (targetedNode) {
+                    // Fire the projectile at the target!
+                    fireManaShardProjectile(targetedNode);
+                    return;
+                }
+            }
+
             // Check for stick figure node clicks
             const clickedStickNode = getClickedStickNode(clickX, clickY);
             if (clickedStickNode) {
-                moveStickAwarenessTo(clickedStickNode);
+                // Check if clicking on Mana Shards node while awareness is there
+                if (clickedStickNode === manaShardsNodeName &&
+                    awarenessAtNode === manaShardsNodeName &&
+                    nodeStates[manaShardsNodeName] === 'active') {
+
+                    // Toggle charging state
+                    if (manaShardsState === 'idle') {
+                        // Start charging
+                        manaShardsState = 'charging';
+                        manaShardsChargeStartTime = performance.now();
+                        manaShardsChargeProgress = 0;
+                    } else if (manaShardsState === 'charging' || manaShardsState === 'charged') {
+                        // Cancel charging - return to idle
+                        manaShardsState = 'idle';
+                        manaShardsChargeProgress = 0;
+                    }
+                } else {
+                    // Normal behavior - move awareness to clicked node
+                    moveStickAwarenessTo(clickedStickNode);
+                }
+            }
+        });
+
+        // Mousemove handler for targeting mode hover detection
+        canvas.addEventListener('mousemove', (e) => {
+            if (!gameActive) return;
+
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            // Update hovered enemy node when in targeting mode
+            if (isInTargetingMode()) {
+                hoveredEnemyNode = getEnemyNodeAtPosition(mouseX, mouseY);
+                // Change cursor when hovering over targetable node
+                canvas.style.cursor = hoveredEnemyNode ? 'crosshair' : 'default';
+            } else {
+                hoveredEnemyNode = null;
+                canvas.style.cursor = 'default';
             }
         });
 
@@ -2588,12 +3877,15 @@
 
             updateStickAwareness(timestamp);
             updateNodeActivation(timestamp);
+            updateManaShardsCharging(timestamp);
             updateCooldownDisplay();
             updateEnemyBeam(timestamp);
+            updateStability(timestamp);
 
             // Enemy AI updates
             updateEnemyAwareness(timestamp);
             updateEnemyNodeActivation(timestamp);
+            updateEnemyNodeRepair(timestamp);
             updateEnemyAI(timestamp);
 
             if (gameActive) {
@@ -2623,10 +3915,15 @@
             drawWizard(100, canvas.height / 2, true, colors[playerChoice]);
             drawWizard(canvas.width - 100, canvas.height / 2, false, colors[enemyBeamType] || '#9b59b6');
             updateAndDrawParticles();
+            updateAndDrawManaShardProjectile(timestamp);
+            updateAndDrawManaShardImpactFlash();
             drawClashFlash();
             drawTimer();
             drawTitle();
             drawActiveMana();
+            drawHP();
+            drawStability();
+            drawTargetingModeUI();
 
             requestAnimationFrame(gameLoop);
         }
@@ -2634,13 +3931,13 @@
         // Start game
         lastClashTime = performance.now();
         updateButtonStates();
-        pickNewEnemyBeam();
+        // Enemy AI uses strategic beam selection in updateEnemyBeam()
         initStickFigureNodes();
         initEnemyNodeNetwork();
         initNodeStates();
         initStickAwareness();
         initEnemyAwareness();
-        initBoostAndCooldowns();
+        initBoostAndCooldowns();  // This calls switchEnemyBeam() which respects node activation
         requestAnimationFrame(gameLoop);
     </script>
 </body>
